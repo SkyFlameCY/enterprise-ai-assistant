@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: enterprise-ai-assistant
+
+  config:
+    import: optional:file:.env[.properties]
+
+  # AI
+  ai:
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY}
+      chat:
+        options:
+          temperature: 0.2
+
+server:
+  port: 8082
