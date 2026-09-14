@@ -10,6 +10,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -39,13 +40,9 @@ class ChatServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        chatService = new ChatServiceImpl(chatClient);
+        PromptTemplate promptTemplate = new PromptTemplate(new ClassPathResource("prompts/chat-user-prompt.txt"));
 
-        ReflectionTestUtils.setField(
-                chatService,
-                "chatUserResource",
-                new ClassPathResource("prompts/chat-user-prompt.txt")
-        );
+        chatService = new ChatServiceImpl(chatClient, promptTemplate);
     }
 
     @Test

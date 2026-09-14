@@ -5,11 +5,10 @@ import cn.coder.sanwei.enterpriseaiassistant.service.ChatService;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.Resource;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
-import java.util.HashMap;
+import java.util.Map;
 
 /**
  * ChatServiceImpl
@@ -22,11 +21,12 @@ public class ChatServiceImpl implements ChatService {
 
     private final ChatClient chatClient;
 
-    @Value("classpath:/prompts/chat-user-prompt.txt")
-    private Resource chatUserResource;
+    private final PromptTemplate chatUserPromptTemplate;
 
-    public ChatServiceImpl(ChatClient chatClient) {
+    public ChatServiceImpl(ChatClient chatClient,
+                           @Qualifier("chatUserPromptTemplate") PromptTemplate chatUserPromptTemplate) {
         this.chatClient = chatClient;
+        this.chatUserPromptTemplate = chatUserPromptTemplate;
     }
 
     @Override
@@ -36,10 +36,7 @@ public class ChatServiceImpl implements ChatService {
         }
 
         try {
-            PromptTemplate promptTemplate = new PromptTemplate(chatUserResource);
-            HashMap<String, Object> map = new HashMap<>();
-            map.put("question", message);
-            Prompt prompt = promptTemplate.create(map);
+            Prompt prompt = chatUserPromptTemplate.create(Map.of("question", message));
             String answer = chatClient
                     .prompt(prompt)
                     .call()

@@ -1,6 +1,7 @@
 package cn.coder.sanwei.enterpriseaiassistant;
 
 import cn.coder.sanwei.enterpriseaiassistant.controller.ChatController;
+import cn.coder.sanwei.enterpriseaiassistant.exception.AiServiceException;
 import cn.coder.sanwei.enterpriseaiassistant.exception.GlobalExceptionHandler;
 import cn.coder.sanwei.enterpriseaiassistant.service.ChatService;
 import org.junit.jupiter.api.Test;
@@ -59,8 +60,30 @@ public class ChatControllerTest {
                                   "message": " "
                                 }
                                 """))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode")
+                        .value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.message")
+                        .value("message 不能为空"));
 
         verifyNoInteractions(chatService);
+    }
+
+    @Test
+    void shouldReturnBadGatewayAiServiceFails() throws Exception {
+        when(chatService.chat("你好")).thenThrow(new AiServiceException("AI 服务调用失败"));
+
+        mockMvc.perform(post("/api/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "message": "你好"
+                                }
+                                """))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.errorCode")
+                        .value("AI_SERVICE_ERROR"))
+                .andExpect(jsonPath("$.message")
+                        .value("AI 服务暂时不可用"));
     }
 }
