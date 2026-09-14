@@ -1,5 +1,7 @@
 # Enterprise AI Assistant
 
+[简体中文](README.md) | [English](README_EN.md)
+
 基于 Spring Boot、Spring AI 和 DeepSeek 构建的企业智能助手后端。
 
 项目当前处于 MVP 基础能力阶段：提供单轮对话接口，通过独立的 System Prompt 和 User Prompt 约束助手行为，并包含请求校验、统一异常处理及核心单元测试。后续将逐步加入会话记忆、企业知识库检索（RAG）、权限控制和可观测性。
