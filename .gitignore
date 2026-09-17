@@ -34,3 +34,5 @@ build/
 
 docs/
 .env
+
+.DS_Store

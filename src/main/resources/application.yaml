@@ -1,9 +1,30 @@
+server:
+  port: 8082
+
 spring:
   application:
     name: enterprise-ai-assistant
 
   config:
     import: optional:file:.env[.properties]
+
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:enterprise_ai}
+    username: ${POSTGRES_USER:enterprise_ai}
+    password: ${POSTGRES_PASSWORD}
+    hikari:
+      connection-timeout: 5000
+
+  liquibase:
+    enabled: true
+    # Master changelog file location
+    change-log: classpath:/db/changelog/db.changelog-master.xml
+    # default-schema: liquibase_demo
+    # run time, first delete database then rebuild (just used by local)
+    drop-first: false
+    show-summary: summary
+    show-summary-output: log
 
   # AI
   ai:
@@ -13,5 +34,6 @@ spring:
         options:
           temperature: 0.2
 
-server:
-  port: 8082
+logging:
+  level:
+    liquibase: INFO
