@@ -28,11 +28,23 @@ spring:
 
   # AI
   ai:
+    model:
+      chat: deepseek
+      embedding: ollama
+
     deepseek:
       api-key: ${DEEPSEEK_API_KEY}
       chat:
         options:
           temperature: 0.2
+
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      embedding:
+        options:
+          model: ${OLLAMA_EMBEDDING_MODEL:bge-m3}
+      init:
+        pull-model-strategy: never
 
 logging:
   level:

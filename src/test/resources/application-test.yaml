@@ -1,5 +1,7 @@
 spring:
   ai:
+    model:
+      embedding: none
     deepseek:
       api-key: test-key
 
