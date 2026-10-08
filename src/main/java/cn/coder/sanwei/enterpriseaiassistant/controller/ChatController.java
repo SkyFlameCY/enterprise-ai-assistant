@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
  * @date 2026/9/10
  */
 @RestController
-@RequestMapping("/api/chat")
+@RequestMapping("/chat")
 public class ChatController {
 
     private final ChatService chatService;

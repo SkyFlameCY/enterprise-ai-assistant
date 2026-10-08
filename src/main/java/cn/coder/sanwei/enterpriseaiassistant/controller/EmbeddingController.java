@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
  * @author caiyang
  * @date 2026/9/17
  */
-@RequestMapping("/api/embeddings")
+@RequestMapping("/embeddings")
 @RestController
 public class EmbeddingController {
 

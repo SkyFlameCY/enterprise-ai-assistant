@@ -1,5 +1,10 @@
+knowledge:
+  embedding-revision: ${OLLAMA_EMBEDDING_REVISION}
+
 server:
   port: 8082
+  servlet:
+    context-path: /api
 
 spring:
   application:

@@ -39,6 +39,7 @@ public class EmbeddingControllerTest {
         when(embeddingService.embed("你好")).thenReturn(new float[]{1.0f, 2.0f, 3.0f});
 
         mockMvc.perform(post("/api/embeddings")
+                        .contextPath("/api")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
                           {"text":"你好"}
@@ -53,6 +54,7 @@ public class EmbeddingControllerTest {
     @Test
     void shouldRejectBlankText() throws Exception {
         mockMvc.perform(post("/api/embeddings")
+                        .contextPath("/api")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
                         {"text": "   "}
@@ -66,6 +68,7 @@ public class EmbeddingControllerTest {
     @Test
     void shouldRejectSimilarityWithoutLeft() throws Exception {
         mockMvc.perform(post("/api/embeddings/similarity")
+                        .contextPath("/api")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
                         {"right": "公司差旅标准"}
@@ -80,6 +83,7 @@ public class EmbeddingControllerTest {
     @Test
     void shouldRejectSimilarityWithoutRight() throws Exception {
         mockMvc.perform(post("/api/embeddings/similarity")
+                        .contextPath("/api")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
                         {"left": "员工出差标准"}
@@ -96,6 +100,7 @@ public class EmbeddingControllerTest {
         when(embeddingService.similarity("出差住宿标准", "差旅酒店上限")).thenReturn(new SimilarityResult(0.8, 1024));
 
         mockMvc.perform(post("/api/embeddings/similarity")
+                        .contextPath("/api")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
                         {"left": "出差住宿标准",
@@ -114,6 +119,7 @@ public class EmbeddingControllerTest {
         when(embeddingService.embed("你好")).thenThrow(new AiServiceException("Ollama 调用失败"));
 
         mockMvc.perform(post("/api/embeddings")
+                        .contextPath("/api")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                           {"text":"你好"}

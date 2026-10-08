@@ -40,6 +40,7 @@ public class ChatControllerTest {
                 .thenReturn("你好，我是企业智能助手");
 
         mockMvc.perform(post("/api/chat")
+                        .contextPath("/api")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -54,6 +55,7 @@ public class ChatControllerTest {
     @Test
     void shouldRejectBlankMessage() throws Exception {
         mockMvc.perform(post("/api/chat")
+                        .contextPath("/api")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
@@ -74,6 +76,7 @@ public class ChatControllerTest {
         when(chatService.chat("你好")).thenThrow(new AiServiceException("AI 服务调用失败"));
 
         mockMvc.perform(post("/api/chat")
+                        .contextPath("/api")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {

@@ -35,7 +35,12 @@ public class EmbeddingServiceImpl implements EmbeddingService {
             throw new AiServiceException("Embedding 模型调用失败", e);
         }
         if (ArrayUtil.isEmpty(vector)) {
-            throw new AiServiceException("模型生成 Vector 出错");
+            throw new AiServiceException("模型返回空向量");
+        }
+        for (float value : vector) {
+            if (!Float.isFinite(value)) {
+                throw new AiServiceException("模型返回非有限向量值");
+            }
         }
         return vector;
     }
@@ -49,7 +54,7 @@ public class EmbeddingServiceImpl implements EmbeddingService {
         float[] vectorB = embed(right);
 
         if (vectorA.length != vectorB.length) {
-            throw new IllegalArgumentException("两个向量长度必须一样");
+            throw new AiServiceException("模型返回的向量纬度不一致");
         }
 
         double dotProduct = 0.0;
@@ -63,7 +68,7 @@ public class EmbeddingServiceImpl implements EmbeddingService {
         }
 
         if (normA == 0.0 || normB == 0.0) {
-            throw new IllegalArgumentException("向量模长不能为 0");
+            throw new AiServiceException("模型返回零向量，无法计算余弦相似度");
         }
 
         double score = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));

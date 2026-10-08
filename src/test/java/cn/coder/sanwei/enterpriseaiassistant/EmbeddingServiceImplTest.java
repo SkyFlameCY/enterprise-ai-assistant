@@ -94,7 +94,7 @@ public class EmbeddingServiceImplTest {
 
         when(embeddingModel.embed("right")).thenReturn(new float[]{1.0f, 2.0f, 3.0f});
 
-        assertThrows(IllegalArgumentException.class, () -> embeddingService.similarity("left", "right"));
+        assertThrows(AiServiceException.class, () -> embeddingService.similarity("left", "right"));
     }
 
     @Test
@@ -103,7 +103,7 @@ public class EmbeddingServiceImplTest {
 
         when(embeddingModel.embed("right")).thenReturn(new float[]{1.0f, 2.0f});
 
-        assertThrows(IllegalArgumentException.class, () -> embeddingService.similarity("left", "right"));
+        assertThrows(AiServiceException.class, () -> embeddingService.similarity("left", "right"));
     }
 
     @Test
@@ -111,5 +111,12 @@ public class EmbeddingServiceImplTest {
         when(embeddingModel.embed("left")).thenThrow(new RuntimeException("Ollama unavailable"));
 
         assertThrows(AiServiceException.class, () -> embeddingService.similarity("left", "right"));
+    }
+
+    @Test
+    void shouldRejectNonFiniteEmbedding() {
+        when(embeddingModel.embed("你好")).thenReturn(new float[] {1.0f, Float.NaN});
+
+        assertThrows(AiServiceException.class, () -> embeddingService.embed("你好"));
     }
 }

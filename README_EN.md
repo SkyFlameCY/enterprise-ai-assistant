@@ -4,20 +4,27 @@
 
 An enterprise AI assistant backend built with Spring Boot and Spring AI. DeepSeek handles chat generation, while local Ollama/BGE-M3 handles text embeddings.
 
-The project is currently at the foundational stage. It provides single-turn chat, text embedding, and semantic similarity APIs, and includes PostgreSQL + pgvector infrastructure. Document retrieval, Agent tool calls, access control, and observability are planned for later stages.
+The model can query PostgreSQL projects, ticket lists, and ticket details, then use a list result to request details within the same request. The server enforces identity, permissions, and tenant filters; the model cannot choose the query tenant.
+
+This is a development-validation build, not a complete production Agent platform. As agreed for this project, the next step returns to Day 10: persisted conversations and bounded short-term memory.
 
 ## Current Features
 
-- DeepSeek-powered enterprise assistant conversations
+- DeepSeek with native Spring AI `queryProject`, `searchTickets`, and `getTicketDetail` read-only tools
+- Real PostgreSQL business queries; ticket lists filter by project and status, use stable ordering, and return at most 10 rows
+- Trusted execution identity derived from authentication; per-tool checks for `project:read` or `ticket:read`
+- Allowlisted DTO fields and tool audit events containing identity, counts, duration, outcome, and error category
+- HTTP Basic development accounts in the `local` profile, with CSRF protection retained
 - Local BGE-M3 text embeddings and cosine similarity between two texts
+- Source implementations for document ingestion, chunk/vector persistence, filtered retrieval, and RAG responses with source fragments
 - Resource-based System Prompt and User Prompt management
 - Chinese responses by default, with safeguards against fabricating internal company data
 - PostgreSQL, pgvector, and Liquibase database infrastructure
 - Validation for blank input and a maximum input length of 4,000 characters
 - Consistent JSON responses for validation, AI service, and unexpected server errors
-- Configuration, service, and controller tests based on mocks; automated tests do not call real models
+- Offline tests mock model, query, or audit dependencies; database integration tests use temporary PostgreSQL containers; neither calls real models
 
-> The database currently supports infrastructure and extension initialization only. Documents and vectors are not stored yet, and enterprise knowledge retrieval and Agent tool calls are not implemented.
+> The current security policy exposes only CSRF token retrieval and the permission-checked Agent endpoint. Legacy chat, embedding, and knowledge HTTP routes are denied by default. Knowledge request tenant fields are not yet integrated with trusted authentication, so those routes must not simply be opened for testing. This stage is not a revalidation of all knowledge features or the full test suite.
 
 ## Technology Stack
 
@@ -28,10 +35,12 @@ The project is currently at the foundational stage. It provides single-turn chat
 | Spring AI 1.1.8 | Model integration and prompt abstractions |
 | DeepSeek | Chat model |
 | Ollama + BGE-M3 | Local text embedding model producing 1,024-dimensional vectors |
-| PostgreSQL 17 + pgvector | Database and infrastructure for future vector retrieval |
+| PostgreSQL 17 + pgvector | Business data, knowledge fragments, and vector retrieval |
+| Spring JDBC | Parameterized SQL, DTO mapping, and transactional storage |
+| Spring Security | Local authentication, endpoint admission, permissions, and CSRF |
 | Liquibase | Database migrations |
 | Jakarta Validation | Request validation |
-| JUnit 5, Mockito, MockMvc | Automated testing |
+| JUnit 5, Mockito, MockMvc, Testcontainers | Offline tests and temporary database integration tests |
 | Docker Compose, Maven Wrapper | Local database, build, and application execution |
 
 ## Project Structure
@@ -40,13 +49,18 @@ The project is currently at the foundational stage. It provides single-turn chat
 src
 ├── main
 │   ├── java/cn/coder/sanwei/enterpriseaiassistant
-│   │   ├── config       # ChatClient and System Prompt configuration
+│   │   ├── audit        # Tool audit events and logging
+│   │   ├── config       # Models, security policy, and local accounts
+│   │   ├── context      # Server-side execution identity
 │   │   ├── controller   # HTTP endpoints
 │   │   ├── dto          # Request and response objects
 │   │   ├── error        # Consistent error responses
 │   │   ├── exception    # Business exceptions and global error handling
 │   │   ├── model        # Service-level result objects
-│   │   └── service      # Chat and embedding services
+│   │   ├── repository   # Knowledge and business queries
+│   │   ├── security     # Trusted authenticated users
+│   │   ├── service      # Agent, knowledge, chat, and embedding services
+│   │   └── tool         # Read-only project and ticket tools
 │   └── resources
 │       ├── db           # Liquibase changelog
 │       ├── prompts      # System and User Prompt templates
@@ -79,7 +93,7 @@ cp .env.example .env
 
 On Windows PowerShell, use `Copy-Item .env.example .env`.
 
-Replace at least `DEEPSEEK_API_KEY` and `POSTGRES_PASSWORD` in `.env`. `POSTGRES_HOST=localhost` is for running the Java application on the host and connecting to the container through its published port. The default Ollama URL is `http://localhost:11434`, and the default model is `bge-m3`; use `OLLAMA_BASE_URL` and `OLLAMA_EMBEDDING_MODEL` to override them.
+Replace at least `DEEPSEEK_API_KEY`, `POSTGRES_PASSWORD`, and `DEMO_SECURITY_PASSWORD` in `.env`. The last value is required and nonblank for local development accounts; no repository default password is provided. `POSTGRES_HOST=localhost` is for running the Java application on the host and connecting to the container through its published port. The default Ollama URL is `http://localhost:11434`, and the default model is `bge-m3`; use `OLLAMA_BASE_URL` and `OLLAMA_EMBEDDING_MODEL` to override them.
 
 The `.env` file is ignored by Git. Never commit real API keys or database passwords or put them in source code, prompts, or logs. In production, inject secrets through your deployment platform.
 
@@ -112,22 +126,53 @@ The application **does not download models automatically**. Make sure Ollama is 
 macOS / Linux:
 
 ```bash
-./mvnw spring-boot:run
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
 Windows:
 
 ```powershell
-mvnw.cmd spring-boot:run
+mvnw.cmd spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
 The service listens on `http://localhost:8082` by default.
 
-At startup, Liquibase enables the `vector` and related extensions in the target database. Completed changesets are not run again on subsequent starts.
+In IDEA, use the program argument `--spring.profiles.active=local`; do not force the local profile in shared configuration. Development accounts must not be enabled in production.
+
+Liquibase initializes extensions and knowledge/business tables. Completed changesets are not run again. Prepare acceptance fixtures separately: test-container data does not remain in the development database.
 
 ## API Usage
 
-### Start a Chat
+### Current Endpoint: Read-Only Agent Chat
+
+```http
+POST /api/agent/chat
+Content-Type: application/json
+```
+
+Local accounts: `tenant-a` (user 101 / tenant 1) and `tenant-b` (user 102 / tenant 2) have both read permissions. `viewer` (user 103 / tenant 1) has no business query permission. Their password comes from `DEMO_SECURITY_PASSWORD`.
+
+Request flow:
+
+1. Call `GET /api/security/csrf` in an HTTP client. Keep the session cookie and the returned `token` and `headerName`.
+2. Set HTTP Basic authentication for the Agent request, send the same session cookie, and include the token using the returned header name.
+3. Use the appropriate account session when switching accounts. Never put passwords, cookies, or CSRF tokens into prompts, the repository, or public logs.
+
+```json
+{
+  "message": "先查询 DB-CHECK-2026 项目下未处理的工单，再根据查询结果展示每条工单的详细说明。"
+}
+```
+
+`message` is required, nonblank, and limited to 4,000 characters. User IDs, tenant IDs, and permissions are not required in the request; they come from server authentication.
+
+The response remains `{"answer":"..."}`. There is no conversationId or cross-request history yet. Each tool independently checks its permission after endpoint admission.
+
+### Legacy Endpoint Reference (Denied by Default)
+
+The following examples preserve legacy request/response contracts, not working anonymous calls under the current security policy. Integrate trusted identity and permissions before restoring these routes; do not bypass security controls to make them callable.
+
+### Basic Chat (Denied by Default)
 
 ```http
 POST /api/chat
@@ -156,7 +201,7 @@ Request fields:
 | --- | --- | --- | --- |
 | `message` | String | Yes | Must not be blank; maximum 4,000 characters |
 
-### Generate a Text Embedding
+### Generate a Text Embedding (Denied by Default)
 
 ```http
 POST /api/embeddings
@@ -180,7 +225,7 @@ Example response (the values are illustrative and depend on the model):
 
 `text` is required, must not be blank, and is limited to 4,000 characters. `dimensions` is the full vector size. `preview` contains only the first eight values; the API does not return the full vector.
 
-### Calculate Semantic Similarity
+### Calculate Semantic Similarity (Denied by Default)
 
 ```http
 POST /api/embeddings/similarity
@@ -206,7 +251,7 @@ Both `left` and `right` are required, must not be blank, and are limited to 4,00
 
 ### Error Responses
 
-All errors use the following structure:
+Errors handled by the controller advice use the following structure. Security-filter 401/403 responses are not guaranteed to use the same JSON format:
 
 ```json
 {
@@ -223,18 +268,35 @@ All errors use the following structure:
 
 > Error messages returned by the current implementation are written in Chinese.
 
-If Ollama is unavailable or the model call fails, the embedding APIs return `502 AI_SERVICE_ERROR`. Blank input returns `400 INVALID_REQUEST`.
+The table describes controller-layer error mappings, not availability of denied routes. Unauthenticated, unauthorized, or invalid-CSRF requests may be rejected by the security filter before reaching a controller.
 
 ## Prompt Management
 
 - `src/main/resources/prompts/enterprise-system-prompt.txt` defines the assistant's role, response principles, and capability boundaries.
 - `src/main/resources/prompts/chat-user-prompt.txt` formats the user's question as a User Message.
+- The Agent system prompt currently lives in `AgentServiceImpl`, defining read-only behavior, reliable ticket-number sources, and stopping detail calls when a list is empty.
 
 The System Prompt is loaded when the application starts. If the file is missing or empty, startup fails immediately so that the service cannot run without its expected behavioral constraints.
 
 ## Testing and Building
 
-Run all tests:
+Run the seven offline classes used for this stage:
+
+```bash
+./mvnw -Dtest=AgentSecurityTest,DemoUserConfigTest,AgentServiceImplTest,ProjectQueryToolsTest,TicketQueryToolsTest,JdbcBusinessRepositoryTest,JdbcTicketRepositoryTest test
+```
+
+The assistant reran these under Java 21 on 2026-10-08: all 160 cases passed. This is a selected scope, not a full-suite pass. Real model tool selection requires separate live validation.
+
+Database integration tests require Docker and explicit selection of `IT` classes:
+
+```bash
+./mvnw -Dtest=BusinessSchemaIT,JdbcBusinessRepositoryIT test
+```
+
+These tests use temporary containers, not the development database. The developer reported both classes passing. Default `./mvnw test` naming rules do not include these `IT` classes.
+
+Full regression (not fully rerun in this stage):
 
 ```bash
 ./mvnw test
@@ -249,7 +311,7 @@ Build an executable JAR:
 Run the packaged application:
 
 ```bash
-java -jar target/enterprise-ai-assistant-0.0.1-SNAPSHOT.jar
+java -jar target/enterprise-ai-assistant-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
 ```
 
 The current test suite covers:
@@ -262,24 +324,25 @@ The current test suite covers:
 - Embedding model failures, empty vectors, and cosine similarity edge cases
 - Embedding and similarity API responses, request validation, and 502 error mapping
 
-Tests use mock models and services, so Ollama, DeepSeek, and PostgreSQL are not needed to run them. Validate real model behavior separately in a local environment.
+The historical coverage list above is not a claim that all those tests were rerun in this stage. The seven offline classes need no model or database service; Testcontainers integration tests require Docker and a PostgreSQL container. Validate real model behavior separately.
 
 ## Current Limitations
 
 - Conversation context is not stored; each request is independent.
-- The database is connected, but document ingestion, vector storage, knowledge retrieval, and internal system queries are not implemented.
-- Agent tool calls and multi-step task execution are not implemented.
+- Read-only project and ticket tools query the database and can chain within one request, but conversation and task state are not persisted.
+- Knowledge service implementations exist; their HTTP routes remain closed pending trusted-identity integration.
+- Business writes, write confirmation, idempotent submission, and Agent-level execution-step budgets are not implemented.
 - Streaming responses are not supported.
-- User authentication, role-based access control, and audit logs are not implemented.
+- Authentication uses local development accounts, not production IAM. Tool audits are logs, not transactional database audit records.
+- Tool error categories are not fully preserved through the model layer; not every tool-level permission denial is guaranteed to become HTTP 403.
 - Prompts can reduce the risk of incorrect responses, but they cannot replace access controls, security policies, or model evaluation.
 
 ## Roadmap
 
-1. Build document ingestion, chunking, vector storage, and Top-K retrieval.
-2. Add source citations and refusal behavior when the evidence is insufficient.
-3. Persist conversations and messages to support multi-turn chat.
-4. Add permission-checked business tools, confirmation for writes, and Agent execution state.
-5. Add auditing, timeouts, retries, observability, and offline evaluation.
+1. Implement conversation ownership, message persistence, and bounded history.
+2. Integrate knowledge endpoints with trusted authentication before combining RAG and business tools.
+3. Add write previews, user confirmation, idempotency, and transactional auditing.
+4. Add execution-step and timeout budgets, recovery, observability, and offline evaluation.
 
 ## Development Guidelines
 
