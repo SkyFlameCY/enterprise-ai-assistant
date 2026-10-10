@@ -1,6 +1,7 @@
 package cn.coder.sanwei.enterpriseaiassistant;
 
 import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
+import cn.coder.sanwei.enterpriseaiassistant.prompt.AgentPromptProvider;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcMessageRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.impl.AgentServiceImpl;
 import cn.coder.sanwei.enterpriseaiassistant.tool.ProjectQueryTools;
@@ -25,6 +26,7 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.core.io.ClassPathResource;
 
 import java.util.Arrays;
 import java.util.List;
@@ -55,7 +57,11 @@ class AgentMessageModelTest {
     @BeforeEach
     void setUp() {
         ChatClient client = ChatClient.builder(model).defaultOptions(ToolCallingChatOptions.builder().build()).build();
-        service = new AgentServiceImpl(client, tickets, projects, messages);
+        AgentPromptProvider promptProvider = new AgentPromptProvider(
+                new ClassPathResource("prompts/agent/core-system.txt"),
+                new ClassPathResource("prompts/agent/ticket-workflow.txt")
+        );
+        service = new AgentServiceImpl(client, tickets, projects, messages, promptProvider);
     }
 
     @Test

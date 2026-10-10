@@ -37,13 +37,16 @@ public class TicketQueryTools {
     }
 
     @Tool(description = """
-            查询当前登录用户所属租户的工单，最多返回10条。
-            按项目编号和状态筛选。这是只读工具，不会创建或修改工单。
+            按项目编号和工单状态查询当前登录用户所属租户的工单。
+            最多返回10条，返回条数不代表匹配总数。
+            空列表表示没有找到可访问的匹配工单。
+            回答时展示 ticketNo、title、status、priority。
+            这是只读工具，不会创建、修改或删除工单。
             """)
     public List<TicketSummary> searchTickets(
             @ToolParam(description = "项目编号，例如 EA-2026")
             String projectCode,
-            @ToolParam(description = "工单状态：OPEN、IN_PROGRESS、RESOLVED")
+            @ToolParam(description = "工单状态：未处理对应 OPEN，处理中对应 IN_PROGRESS，已解决对应 RESOLVED。")
             String status,
             ToolContext toolContext
     ) {
@@ -103,8 +106,11 @@ public class TicketQueryTools {
 
     @Tool(description = """
             按工单编号查询当前登录用户所属租户的工单详情。
-            返回 null 表示未找到可访问的工单。
-            这是只读工具，不会创建或修改工单。
+            只需要 ticketNo，不需要额外提供项目编号和状态。
+            返回 null 时说明“未找到可访问的工单”。
+            回答时展示 ticketNo、projectCode、title、status、
+            priority 和 description。
+            这是只读工具，不会创建、修改或删除工单。
             """)
     public TicketDetail getTicketDetail(
             @ToolParam(description = "工单编号，例如 TK-001")

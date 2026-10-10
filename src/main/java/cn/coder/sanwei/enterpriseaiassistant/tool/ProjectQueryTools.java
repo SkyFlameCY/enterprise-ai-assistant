@@ -34,9 +34,12 @@ public class ProjectQueryTools {
     }
 
     @Tool(description = """
-            按项目编号查询当前登录用户所属租户的项目。
-            返回 null 表示未找到可访问的项目。
-            这是只读工具，不会创建或修改项目。
+            按项目编号查询当前登录用户所属租户的项目本身的信息。
+            只需要 projectCode，不需要提供工单状态。
+            返回 null 时说明“未找到可访问的项目”。
+            回答时展示 projectCode、name、status。
+            status 是项目状态，不得按工单状态解释。
+            这是只读工具，不会创建、修改或删除项目。
             """)
     public ProjectSummary queryProject(
             @ToolParam(description = "项目编号，例如 EA-2026")
