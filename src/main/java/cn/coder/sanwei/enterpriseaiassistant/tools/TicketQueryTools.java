@@ -1,4 +1,4 @@
-package cn.coder.sanwei.enterpriseaiassistant.tool;
+package cn.coder.sanwei.enterpriseaiassistant.tools;
 
 import cn.coder.sanwei.enterpriseaiassistant.audit.ToolAuditEvent;
 import cn.coder.sanwei.enterpriseaiassistant.audit.ToolAuditService;

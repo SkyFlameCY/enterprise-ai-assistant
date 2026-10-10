@@ -5,7 +5,7 @@ import cn.coder.sanwei.enterpriseaiassistant.audit.ToolAuditService;
 import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
 import cn.coder.sanwei.enterpriseaiassistant.dto.ProjectSummary;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcBusinessRepository;
-import cn.coder.sanwei.enterpriseaiassistant.tool.ProjectQueryTools;
+import cn.coder.sanwei.enterpriseaiassistant.tools.ProjectQueryTools;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

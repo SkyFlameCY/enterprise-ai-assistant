@@ -6,7 +6,7 @@ import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
 import cn.coder.sanwei.enterpriseaiassistant.dto.TicketDetail;
 import cn.coder.sanwei.enterpriseaiassistant.dto.TicketSummary;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcBusinessRepository;
-import cn.coder.sanwei.enterpriseaiassistant.tool.TicketQueryTools;
+import cn.coder.sanwei.enterpriseaiassistant.tools.TicketQueryTools;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
