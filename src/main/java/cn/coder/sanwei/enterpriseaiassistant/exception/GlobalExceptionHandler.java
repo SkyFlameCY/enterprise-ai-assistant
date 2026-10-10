@@ -64,4 +64,22 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ApiError("DOCUMENT_ALREADY_EXISTS", e.getMessage()));
     }
+
+    @ExceptionHandler(ConversationNotAccessibleException.class)
+    public ResponseEntity<ApiError> handlerConversationNotAccessible(ConversationNotAccessibleException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiError("CONVERSATION_NOT_ACCESSIBLE", e.getMessage()));
+    }
+
+    @ExceptionHandler(ConversationStateException.class)
+    public ResponseEntity<ApiError> handlerConversationState(ConversationStateException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiError("CONVERSATION_STATE_ERROR", e.getMessage()));
+    }
+
+    @ExceptionHandler(ConversationConflictException.class)
+    public ResponseEntity<ApiError> handlerConversationConflict(ConversationConflictException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiError("CONVERSATION_CONFLICT", e.getMessage()));
+    }
 }

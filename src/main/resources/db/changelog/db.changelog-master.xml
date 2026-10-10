@@ -17,4 +17,19 @@
     <changeSet id="003-create-business-tables" author="sanwei" dbms="postgresql">
         <sqlFile path="changes/003-create-business-tables.sql" relativeToChangelogFile="true" splitStatements="true" stripComments="true"/>
     </changeSet>
+
+    <changeSet id="004-create-agent-conversation" author="sanwei" dbms="postgresql">
+        <sqlFile path="changes/004-create-agent-conversation.sql"
+                 relativeToChangelogFile="true"
+                 splitStatements="true"
+                 stripComments="true"/>
+    </changeSet>
+    
+    <changeSet id="005-create-agent-message" author="sanwei" dbms="postgresql">
+        <sqlFile path="changes/005-create-agent-message.sql" relativeToChangelogFile="true" splitStatements="true"/>
+    </changeSet>
+
+    <changeSet id="006-add-conversation-version" author="sanwei" dbms="postgresql">
+        <sqlFile path="changes/006-add-conversation-version.sql" relativeToChangelogFile="true" splitStatements="true"/>
+    </changeSet>
 </databaseChangeLog>

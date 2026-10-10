@@ -1,10 +1,10 @@
 package cn.coder.sanwei.enterpriseaiassistant.controller;
 
 import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
-import cn.coder.sanwei.enterpriseaiassistant.dto.ChatRequest;
-import cn.coder.sanwei.enterpriseaiassistant.dto.ChatResponse;
+import cn.coder.sanwei.enterpriseaiassistant.dto.AgentChatRequest;
+import cn.coder.sanwei.enterpriseaiassistant.dto.AgentChatResponse;
 import cn.coder.sanwei.enterpriseaiassistant.security.AgentUserDetails;
-import cn.coder.sanwei.enterpriseaiassistant.service.AgentService;
+import cn.coder.sanwei.enterpriseaiassistant.service.ConversationAgentService;
 import jakarta.validation.Valid;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -25,15 +25,15 @@ import java.util.stream.Collectors;
 @RestController
 public class AgentController {
 
-    private final AgentService agentService;
+    private final ConversationAgentService conversationAgentService;
 
-    public AgentController(AgentService agentService) {
-        this.agentService = agentService;
+    public AgentController(ConversationAgentService conversationAgentService) {
+        this.conversationAgentService = conversationAgentService;
     }
 
     @PostMapping("/chat")
-    public ChatResponse chat(
-            @Valid @RequestBody ChatRequest request,
+    public AgentChatResponse chat(
+            @Valid @RequestBody AgentChatRequest request,
             @AuthenticationPrincipal(errorOnInvalidType = true) AgentUserDetails user) {
         if (user == null) {
             throw new IllegalStateException("未取到有效的登录信息");
@@ -49,7 +49,7 @@ public class AgentController {
                 permissions
         );
 
-        return new ChatResponse(agentService.chat(request.message(), context));
+        return conversationAgentService.chat(request.conversationId(), request.message(), context);
     }
 
  }

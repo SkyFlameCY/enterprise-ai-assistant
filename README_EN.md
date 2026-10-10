@@ -4,9 +4,9 @@
 
 An enterprise AI assistant backend built with Spring Boot and Spring AI. DeepSeek handles chat generation, while local Ollama/BGE-M3 handles text embeddings.
 
-The model can query PostgreSQL projects, ticket lists, and ticket details, then use a list result to request details within the same request. The server enforces identity, permissions, and tenant filters; the model cannot choose the query tenant.
+The model can query PostgreSQL projects, ticket lists, and ticket details, then use a list result to request details. The server enforces identity, permissions, and tenant filters; the model cannot choose the query tenant. Conversations and messages are stored in PostgreSQL, supporting bounded multi-turn context and continued conversations after application restarts.
 
-This is a development-validation build, not a complete production Agent platform. As agreed for this project, the next step returns to Day 10: persisted conversations and bounded short-term memory.
+This is a development-validation build, not a complete production Agent platform.
 
 ## Current Features
 
@@ -15,6 +15,9 @@ This is a development-validation build, not a complete production Agent platform
 - Trusted execution identity derived from authentication; per-tool checks for `project:read` or `ticket:read`
 - Allowlisted DTO fields and tool audit events containing identity, counts, duration, outcome, and error category
 - HTTP Basic development accounts in the `local` profile, with CSRF protection retained
+- Conversation ownership bound to the authenticated tenant and user; client-supplied identities and history are not used
+- Complete USER/ASSISTANT turns persisted with a bounded recent-history window and body-length budget
+- Model calls outside database transactions; version-checked short transactions prevent stale concurrent answers and partial writes
 - Local BGE-M3 text embeddings and cosine similarity between two texts
 - Source implementations for document ingestion, chunk/vector persistence, filtered retrieval, and RAG responses with source fragments
 - Resource-based System Prompt and User Prompt management
@@ -24,7 +27,7 @@ This is a development-validation build, not a complete production Agent platform
 - Consistent JSON responses for validation, AI service, and unexpected server errors
 - Offline tests mock model, query, or audit dependencies; database integration tests use temporary PostgreSQL containers; neither calls real models
 
-> The current security policy exposes only CSRF token retrieval and the permission-checked Agent endpoint. Legacy chat, embedding, and knowledge HTTP routes are denied by default. Knowledge request tenant fields are not yet integrated with trusted authentication, so those routes must not simply be opened for testing. This stage is not a revalidation of all knowledge features or the full test suite.
+> The current security policy exposes only CSRF token retrieval and the permission-checked Agent endpoint. Legacy chat, embedding, and knowledge HTTP routes are denied by default. Knowledge request tenant fields are not yet integrated with trusted authentication, so those routes must not simply be opened for testing. Agent validation does not establish that all knowledge features or the full project test suite pass.
 
 ## Technology Stack
 
@@ -56,8 +59,9 @@ src
 │   │   ├── dto          # Request and response objects
 │   │   ├── error        # Consistent error responses
 │   │   ├── exception    # Business exceptions and global error handling
+│   │   ├── memory       # Bounded history validation and structured messages
 │   │   ├── model        # Service-level result objects
-│   │   ├── repository   # Knowledge and business queries
+│   │   ├── repository   # Knowledge, business queries, and conversation storage
 │   │   ├── security     # Trusted authenticated users
 │   │   ├── service      # Agent, knowledge, chat, and embedding services
 │   │   └── tool         # Read-only project and ticket tools
@@ -139,11 +143,11 @@ The service listens on `http://localhost:8082` by default.
 
 In IDEA, use the program argument `--spring.profiles.active=local`; do not force the local profile in shared configuration. Development accounts must not be enabled in production.
 
-Liquibase initializes extensions and knowledge/business tables. Completed changesets are not run again. Prepare acceptance fixtures separately: test-container data does not remain in the development database.
+Liquibase initializes extensions and knowledge, business, conversation, and message tables. Completed changesets are not run again. Prepare demonstration fixtures separately: test-container data does not remain in the development database.
 
 ## API Usage
 
-### Current Endpoint: Read-Only Agent Chat
+### Conversation-Aware Read-Only Agent Chat
 
 ```http
 POST /api/agent/chat
@@ -160,13 +164,56 @@ Request flow:
 
 ```json
 {
-  "message": "先查询 DB-CHECK-2026 项目下未处理的工单，再根据查询结果展示每条工单的详细说明。"
+  "message": "查询 EA-2026 项目"
 }
 ```
 
-`message` is required, nonblank, and limited to 4,000 characters. User IDs, tenant IDs, and permissions are not required in the request; they come from server authentication.
+`message` is required, nonblank, and limited to 4,000 characters. Omitting `conversationId` or setting it to null creates an owned conversation. A supplied ID must be positive and belong to the authenticated user and tenant. The example project requires corresponding local business data.
 
-The response remains `{"answer":"..."}`. There is no conversationId or cross-request history yet. Each tool independently checks its permission after endpoint admission.
+Example successful response structure (77 is illustrative; the answer depends on the current model and tool results):
+
+```json
+{
+  "conversationId": 77,
+  "turnNo": 1,
+  "answer": "..."
+}
+```
+
+Continue using the actual returned conversation ID:
+
+```json
+{
+  "conversationId": 77,
+  "message": "它有哪些未处理工单？"
+}
+```
+
+Success returns the same conversationId and the actual saved turnNo. Client-supplied userId, tenantId, permissions, version, turnNo, or history are not used; identity and version come from the server. A conversation ID is not an access credential. Missing and unowned conversations both return 404, without creating a replacement.
+
+History only provides reference and explicit-identifier hints. Current permissions, existence, and project/ticket state must still be checked through fresh tool queries. Each tool independently checks the current identity's permission after endpoint admission.
+
+### Conversation History and Consistency
+
+Configure `agent.memory` at the same YAML level as `spring`:
+
+```yaml
+agent:
+  memory:
+    turn-limit: 5
+    max-context-chars: 16000
+    max-assistant-chars: 8000
+```
+
+- turn-limit accepts 1–20 and loads only recent complete USER/ASSISTANT turns.
+- max-context-chars accepts 4,000–64,000 and counts history bodies plus current input using Java `String.length()`. After reserving the current input, keep consecutive complete turns from newest to oldest, stopping at the first turn that does not fit. Do not truncate bodies or skip that turn to select older content.
+- max-assistant-chars accepts 1–16,000. Blank or oversized answers fail without being truncated and saved.
+- The body budget is not a complete model-token budget: fixed system instructions, tool definitions, and the current native tool-call trajectory are excluded.
+- Read the owned ACTIVE conversation, version, and history before the model call. Invoke the model outside a transaction, then recheck ownership, state, and the original version in a short transaction that advances version/time and inserts both messages.
+- Only one concurrent answer based on the same old version can commit; other requests return a conflict, without silently resaving. Model failures do not append a turn; save failures roll back messages, version, and update time.
+- A new conversation is created before the model call. A failed first call may leave an owned empty conversation; automatic cleanup and request idempotency are not provided.
+
+After restarting the application, the same ID loads history from PostgreSQL. Retain database data and volumes; conversation recovery is not long-running task recovery.
 
 ### Legacy Endpoint Reference (Denied by Default)
 
@@ -263,6 +310,9 @@ Errors handled by the controller advice use the following structure. Security-fi
 | HTTP Status | Error Code | Description |
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | The request parameters are invalid |
+| 404 | `CONVERSATION_NOT_ACCESSIBLE` | The conversation is missing or not owned by the current user and tenant |
+| 409 | `CONVERSATION_STATE_ERROR` | The conversation is archived or has reached its continuation state/version limit |
+| 409 | `CONVERSATION_CONFLICT` | The conversation version changed while the model generated its answer |
 | 502 | `AI_SERVICE_ERROR` | The model call failed or returned no valid content |
 | 500 | `INTERNAL_ERROR` | An unexpected server error occurred |
 
@@ -274,29 +324,31 @@ The table describes controller-layer error mappings, not availability of denied 
 
 - `src/main/resources/prompts/enterprise-system-prompt.txt` defines the assistant's role, response principles, and capability boundaries.
 - `src/main/resources/prompts/chat-user-prompt.txt` formats the user's question as a User Message.
-- The Agent system prompt currently lives in `AgentServiceImpl`, defining read-only behavior, reliable ticket-number sources, and stopping detail calls when a list is empty.
+- The Agent system prompt currently lives in `AgentServiceImpl`, defining read-only behavior, revalidation of identifiers from bounded history, and stopping detail calls when a list is empty. History uses separate USER/ASSISTANT messages, not one combined user body or a replay of unpersisted tool trajectories.
 
 The System Prompt is loaded when the application starts. If the file is missing or empty, startup fails immediately so that the service cannot run without its expected behavioral constraints.
 
 ## Testing and Building
 
-Run the seven offline classes used for this stage:
+Run the selected 16 offline regression classes:
 
 ```bash
-./mvnw -Dtest=AgentSecurityTest,DemoUserConfigTest,AgentServiceImplTest,ProjectQueryToolsTest,TicketQueryToolsTest,JdbcBusinessRepositoryTest,JdbcTicketRepositoryTest test
+./mvnw -Dtest=ConversationServiceImplTest,ConversationTurnSaveTest,ConversationExceptionHandlerTest,JdbcMessageRepositoryTest,JdbcConversationRepositoryTest,TicketQueryToolsTest,JdbcTicketRepositoryTest,JdbcBusinessRepositoryTest,AgentServiceImplTest,DemoUserConfigTest,AgentSecurityTest,ProjectQueryToolsTest,AgentMemoryPropertiesTest,ConversationHistoryBuilderTest,ConversationAgentServiceImplTest,AgentMessageModelTest test
 ```
 
-The assistant reran these under Java 21 on 2026-10-08: all 160 cases passed. This is a selected scope, not a full-suite pass. Real model tool selection requires separate live validation.
+The assistant reran this selected scope under Java 21: all 392 cases passed. This is not a full-suite pass. Offline tests do not establish real-model tool selection or reference resolution.
 
 Database integration tests require Docker and explicit selection of `IT` classes:
 
 ```bash
-./mvnw -Dtest=BusinessSchemaIT,JdbcBusinessRepositoryIT test
+./mvnw -Dtest=BusinessSchemaIT,JdbcBusinessRepositoryIT,AgentConversationSchemaIT,AgentMessageSchemaIT,AgentConversationVersionSchemaIT,JdbcConversationRepositoryIT,JdbcMessageRepositoryIT,ConversationServiceIT,ConversationAgentServiceIT test
 ```
 
-These tests use temporary containers, not the development database. The developer reported both classes passing. Default `./mvnw test` naming rules do not include these `IT` classes.
+These tests use temporary containers, not the development database. The classes are recorded as passing based on developer feedback; the assistant did not independently execute them. The conversation orchestration integration class contains 16 scenarios, mocks only the model boundary, and checks real history queries, short transactions, rollback, and concurrency conflicts. Default `./mvnw test` naming rules do not include these `IT` classes.
 
-Full regression (not fully rerun in this stage):
+Local live-model follow-ups, cross-tenant conversation rejection, and continuation after application restart were reported as passing by the developer. Raw responses and audit logs were not individually archived; this is not evidence of independent assistant execution or production validation.
+
+Full regression (the following full-suite command is not claimed to pass):
 
 ```bash
 ./mvnw test
@@ -323,26 +375,22 @@ The current test suite covers:
 - Successful chat API responses and request validation
 - Embedding model failures, empty vectors, and cosine similarity edge cases
 - Embedding and similarity API responses, request validation, and 502 error mapping
+- Conversation configuration binding, complete history pairs, body budgets, and structured model messages
+- Conversation ownership, pre-model version snapshots, short save transactions, and concurrency conflicts
+- Conversation HTTP contracts, 404/409/500/502 mappings, and the existing security filter chain
 
-The historical coverage list above is not a claim that all those tests were rerun in this stage. The seven offline classes need no model or database service; Testcontainers integration tests require Docker and a PostgreSQL container. Validate real model behavior separately.
+The coverage list above is not a claim that every test was rerun. The selected 16 offline classes need no model or database service; Testcontainers integration tests require Docker and a PostgreSQL container. Validate real model behavior separately.
 
 ## Current Limitations
 
-- Conversation context is not stored; each request is independent.
-- Read-only project and ticket tools query the database and can chain within one request, but conversation and task state are not persisted.
+- Conversations persist only USER and final ASSISTANT text; summaries, long-term memory, native tool trajectories, and task execution state machines are not implemented.
+- Trimming history may remove the information needed to resolve a reference, requiring clarification. Conversation persistence is not request idempotency or long-running task recovery.
 - Knowledge service implementations exist; their HTTP routes remain closed pending trusted-identity integration.
 - Business writes, write confirmation, idempotent submission, and Agent-level execution-step budgets are not implemented.
 - Streaming responses are not supported.
 - Authentication uses local development accounts, not production IAM. Tool audits are logs, not transactional database audit records.
 - Tool error categories are not fully preserved through the model layer; not every tool-level permission denial is guaranteed to become HTTP 403.
 - Prompts can reduce the risk of incorrect responses, but they cannot replace access controls, security policies, or model evaluation.
-
-## Roadmap
-
-1. Implement conversation ownership, message persistence, and bounded history.
-2. Integrate knowledge endpoints with trusted authentication before combining RAG and business tools.
-3. Add write previews, user confirmation, idempotency, and transactional auditing.
-4. Add execution-step and timeout budgets, recovery, observability, and offline evaluation.
 
 ## Development Guidelines
 

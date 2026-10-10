@@ -51,6 +51,13 @@ spring:
       init:
         pull-model-strategy: never
 
+# Agent
+agent:
+  memory:
+    turn-limit: 5
+    max-context-chars: 16000
+    max-assistant-chars: 8000
+
 logging:
   level:
     liquibase: INFO

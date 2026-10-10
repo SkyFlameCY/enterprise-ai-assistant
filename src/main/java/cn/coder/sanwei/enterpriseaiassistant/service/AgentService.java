@@ -1,6 +1,9 @@
 package cn.coder.sanwei.enterpriseaiassistant.service;
 
 import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
+import org.springframework.ai.chat.messages.Message;
+
+import java.util.List;
 
 /**
  * AgentService
@@ -11,4 +14,6 @@ import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
 public interface AgentService {
 
     String chat(String message, AgentExecutionContext context);
+
+    String chatWithMessage(List<Message> messages, AgentExecutionContext context);
 }

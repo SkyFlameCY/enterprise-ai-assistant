@@ -8,6 +8,7 @@ import cn.coder.sanwei.enterpriseaiassistant.dto.TicketDetail;
 import cn.coder.sanwei.enterpriseaiassistant.dto.TicketSummary;
 import cn.coder.sanwei.enterpriseaiassistant.exception.AiServiceException;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcBusinessRepository;
+import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcMessageRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.impl.AgentServiceImpl;
 import cn.coder.sanwei.enterpriseaiassistant.tool.ProjectQueryTools;
 import cn.coder.sanwei.enterpriseaiassistant.tool.TicketQueryTools;
@@ -65,6 +66,9 @@ class AgentServiceImplTest {
     @Mock
     private JdbcBusinessRepository businessRepository;
 
+    @Mock
+    private JdbcMessageRepository messageRepository;
+
     private AgentServiceImpl service;
 
     @BeforeEach
@@ -74,7 +78,8 @@ class AgentServiceImplTest {
                 .build();
         service = new AgentServiceImpl(client,
                 new TicketQueryTools(auditService, businessRepository),
-                new ProjectQueryTools(auditService, businessRepository));
+                new ProjectQueryTools(auditService, businessRepository),
+                messageRepository);
     }
 
     @Test
