@@ -9,9 +9,6 @@ import jakarta.validation.constraints.*;
  * @date 2026/10/1
  */
 public record KnowledgeSearchRequest(
-        @NotNull(message = "tenantId 不能为空")
-        @Positive(message = "tenantId 必须为正数")
-        Long tenantId,
 
         @NotBlank(message = "question 不能为空")
         @Size(max = 4000, message = "question 最大不能超过 4000 个字符")

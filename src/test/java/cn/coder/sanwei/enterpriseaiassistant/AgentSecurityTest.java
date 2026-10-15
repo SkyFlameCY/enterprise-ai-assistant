@@ -124,6 +124,18 @@ class AgentSecurityTest {
         verifyNoInteractions(agentService);
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"knowledge-reader-a", "knowledge-reader-b",
+            "knowledge-editor-a", "knowledge-editor-b"})
+    void shouldKeepKnowledgeOnlyAccountsOutsideBusinessAgent(String username) throws Exception {
+        mockMvc.perform(post("/api/agent/chat").contextPath("/api")
+                        .with(httpBasic(username, TEST_PASSWORD)).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON).content(REQUEST_BODY))
+                .andExpect(status().isForbidden());
+
+        verifyNoInteractions(agentService);
+    }
+
     @Test
     void shouldRequireAuthenticationBeforeCallingAgent() throws Exception {
         mockMvc.perform(post("/api/agent/chat").contextPath("/api").with(csrf())

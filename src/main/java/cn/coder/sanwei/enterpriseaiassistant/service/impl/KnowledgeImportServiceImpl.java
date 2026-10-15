@@ -1,5 +1,6 @@
 package cn.coder.sanwei.enterpriseaiassistant.service.impl;
 
+import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
 import cn.coder.sanwei.enterpriseaiassistant.entity.KnowledgeChunk;
 import cn.coder.sanwei.enterpriseaiassistant.entity.KnowledgeDocument;
 import cn.coder.sanwei.enterpriseaiassistant.exception.AiServiceException;
@@ -8,11 +9,13 @@ import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcKnowledgeRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.EmbeddingService;
 import cn.coder.sanwei.enterpriseaiassistant.service.KnowledgeImportService;
 import cn.coder.sanwei.enterpriseaiassistant.service.KnowledgeStorageService;
+import cn.coder.sanwei.enterpriseaiassistant.service.PermissionService;
 import cn.coder.sanwei.enterpriseaiassistant.utils.TextChunker;
 import cn.hutool.core.collection.CollectionUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.crypto.digest.DigestUtil;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -45,18 +48,32 @@ public class KnowledgeImportServiceImpl implements KnowledgeImportService {
 
     private final JdbcKnowledgeRepository repository;
 
+    private final PermissionService permissionService;
+
     public KnowledgeImportServiceImpl(EmbeddingService embeddingService,
                                       KnowledgeStorageService knowledgeStorageService,
-                                      JdbcKnowledgeRepository repository) {
+                                      JdbcKnowledgeRepository repository,
+                                      PermissionService permissionService) {
         this.embeddingService  = embeddingService;
         this.knowledgeStorageService = knowledgeStorageService;
         this.repository = repository;
+        this.permissionService = permissionService;
     }
 
     @Override
-    public Long importText(KnowledgeDocument document, String text) {
-        if (repository.existsDocument(document.getTenantId(), document.getDocumentKey(), document.getVersion())) {
-            throw new DocumentAlreadyExistsException("改文档版本已存在");
+    public Long importText(KnowledgeDocument document, String text, AgentExecutionContext context) {
+        if (context == null || !permissionService.hasAnyPermissions(context, "knowledge:write")) {
+            throw new AccessDeniedException("没有知识库导入权限");
+        }
+
+        if (document == null) {
+            throw new IllegalArgumentException("文档不能为空");
+        }
+
+        document.setTenantId(context.tenantId());
+
+        if (repository.existsDocument(context.tenantId(), document.getDocumentKey(), document.getVersion())) {
+            throw new DocumentAlreadyExistsException("该文档版本已存在");
         }
         List<String> parts = TextChunker.split(text, 500, 100);
         List<KnowledgeChunk> chunks = new ArrayList<>();
@@ -98,7 +115,11 @@ public class KnowledgeImportServiceImpl implements KnowledgeImportService {
     }
 
     @Override
-    public Long importFile(KnowledgeDocument document, Path file) throws IOException {
+    public Long importFile(KnowledgeDocument document, Path file, AgentExecutionContext context) throws IOException {
+        if (context == null || !permissionService.hasAnyPermissions(context, "knowledge:write")) {
+            throw new AccessDeniedException("没有知识库导入权限");
+        }
+
         if (file == null || !Files.isRegularFile(file)) {
             throw new IllegalArgumentException("文件不能为空且须是普通文件");
         }
@@ -117,7 +138,7 @@ public class KnowledgeImportServiceImpl implements KnowledgeImportService {
             if (StrUtil.isBlank(document.getSourceRef())) {
                 document.setSourceRef(file.getFileName().toString());
             }
-            return importText(document, text);
+            return importText(document, text, context);
         } catch (IOException e) {
             throw new IOException("文件读取失败", e);
         }

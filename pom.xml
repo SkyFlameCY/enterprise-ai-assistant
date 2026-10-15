@@ -18,6 +18,7 @@
         <java.version>21</java.version>
         <spring-ai.version>1.1.8</spring-ai.version>
         <hutool.version>5.8.47</hutool.version>
+        <guava.version>33.5.0-jre</guava.version>
     </properties>
 
     <dependencyManagement>
@@ -101,6 +102,12 @@
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>${guava.version}</version>
         </dependency>
 
         <!-- Test -->

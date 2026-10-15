@@ -1,5 +1,6 @@
 package cn.coder.sanwei.enterpriseaiassistant.service;
 
+import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
 import cn.coder.sanwei.enterpriseaiassistant.model.KnowledgeSearchHit;
 
 import java.util.List;
@@ -12,6 +13,6 @@ import java.util.List;
  */
 public interface KnowledgeRetrievalService {
     
-    List<KnowledgeSearchHit> retrieval(long tenantId, String question, int topK, double minSimilarity);
+    List<KnowledgeSearchHit> retrieval(String question, int topK, double minSimilarity, AgentExecutionContext context);
 
 }

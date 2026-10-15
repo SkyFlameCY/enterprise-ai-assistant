@@ -1,5 +1,6 @@
 package cn.coder.sanwei.enterpriseaiassistant.service;
 
+import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
 import cn.coder.sanwei.enterpriseaiassistant.dto.RagResponse;
 
 /**
@@ -10,5 +11,5 @@ import cn.coder.sanwei.enterpriseaiassistant.dto.RagResponse;
  */
 public interface RagService {
 
-    RagResponse ask(long tenantId, String question, int topK, double minSimilarity);
+    RagResponse ask(String question, int topK, double minSimilarity, AgentExecutionContext context);
 }

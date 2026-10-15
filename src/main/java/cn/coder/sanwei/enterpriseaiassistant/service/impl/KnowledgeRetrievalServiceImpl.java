@@ -1,12 +1,15 @@
 package cn.coder.sanwei.enterpriseaiassistant.service.impl;
 
+import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
 import cn.coder.sanwei.enterpriseaiassistant.exception.AiServiceException;
 import cn.coder.sanwei.enterpriseaiassistant.model.KnowledgeSearchHit;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcKnowledgeRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.EmbeddingService;
 import cn.coder.sanwei.enterpriseaiassistant.service.KnowledgeRetrievalService;
+import cn.coder.sanwei.enterpriseaiassistant.service.PermissionService;
 import cn.hutool.core.util.StrUtil;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
 import java.util.Arrays;
@@ -31,16 +34,20 @@ public class KnowledgeRetrievalServiceImpl implements KnowledgeRetrievalService 
 
     private final JdbcKnowledgeRepository repository;
 
+    private final PermissionService permissionService;
+
     public KnowledgeRetrievalServiceImpl(EmbeddingService embeddingService,
-                                         JdbcKnowledgeRepository repository) {
+                                         JdbcKnowledgeRepository repository,
+                                         PermissionService permissionService) {
         this.embeddingService = embeddingService;
         this.repository = repository;
+        this.permissionService = permissionService;
     }
 
     @Override
-    public List<KnowledgeSearchHit> retrieval(long tenantId, String question, int topK, double minSimilarity) {
-        if (tenantId <= 0) {
-            throw new IllegalArgumentException("组户 ID 不正确");
+    public List<KnowledgeSearchHit> retrieval(String question, int topK, double minSimilarity, AgentExecutionContext context) {
+        if (context == null || !permissionService.hasAnyPermissions(context, "knowledge:read")) {
+            throw new AccessDeniedException("没有知识库的查询权限");
         }
         if (StrUtil.isBlank(question)) {
             throw new IllegalArgumentException("问题不能为空");
@@ -67,7 +74,7 @@ public class KnowledgeRetrievalServiceImpl implements KnowledgeRetrievalService 
             throw new AiServiceException("模型返回零向量，无法用于检索");
         }
 
-        List<KnowledgeSearchHit> hits = repository.findTopK(tenantId, EMBEDDING_MODEL, EMBEDDING_REVISION, Arrays.toString(vector), topK);
+        List<KnowledgeSearchHit> hits = repository.findTopK(context.tenantId(), EMBEDDING_MODEL, EMBEDDING_REVISION, Arrays.toString(vector), topK);
 
         return hits.stream().filter(hit -> hit.similarity() >= minSimilarity).toList();
     }

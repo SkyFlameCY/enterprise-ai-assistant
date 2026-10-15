@@ -6,8 +6,11 @@ import cn.coder.sanwei.enterpriseaiassistant.security.AgentUserDetails;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Profile;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetailsService;
@@ -16,8 +19,10 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
 
 /**
  * 演示账号配置测试：使用测试专用密码，不读取本地密码或启动应用。
@@ -31,7 +36,7 @@ class DemoUserConfigTest {
 
     @BeforeEach
     void setUp() {
-        passwordEncoder = new SecurityConfig().passwordEncoder();
+        passwordEncoder = new SecurityConfig(mock(ApplicationContext.class)).passwordEncoder();
         users = new DemoUserConfig().demoUserDetailsService(passwordEncoder, TEST_PASSWORD);
     }
 
@@ -61,6 +66,31 @@ class DemoUserConfigTest {
                 () -> assertEquals(103L, user.getUserId()),
                 () -> assertEquals(1L, user.getTenantId()),
                 () -> assertTrue(user.getAuthorities().isEmpty())
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("knowledgeAccounts")
+    void shouldProvideDedicatedKnowledgeIdentityAndExactPermissions(
+            String username, long userId, long tenantId, Set<String> permissions) {
+        AgentUserDetails user = (AgentUserDetails) users.loadUserByUsername(username);
+
+        assertAll(
+                () -> assertEquals(userId, user.getUserId()),
+                () -> assertEquals(tenantId, user.getTenantId()),
+                () -> assertEquals(username, user.getUsername()),
+                () -> assertEquals(permissions, authorities(user)),
+                () -> assertNotEquals(TEST_PASSWORD, user.getPassword()),
+                () -> assertTrue(passwordEncoder.matches(TEST_PASSWORD, user.getPassword()))
+        );
+    }
+
+    static Stream<Arguments> knowledgeAccounts() {
+        return Stream.of(
+                Arguments.of("knowledge-reader-a", 301L, 1L, Set.of("knowledge:read")),
+                Arguments.of("knowledge-reader-b", 302L, 2L, Set.of("knowledge:read")),
+                Arguments.of("knowledge-editor-a", 303L, 1L, Set.of("knowledge:read", "knowledge:write")),
+                Arguments.of("knowledge-editor-b", 304L, 2L, Set.of("knowledge:read", "knowledge:write"))
         );
     }
 

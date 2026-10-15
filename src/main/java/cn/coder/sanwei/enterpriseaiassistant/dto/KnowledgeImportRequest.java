@@ -9,9 +9,6 @@ import jakarta.validation.constraints.*;
  * @date 2026/10/1
  */
 public record KnowledgeImportRequest(
-        @NotNull(message = "tenantId 不能为空")
-        @Positive(message = "tenantId 必须为正数")
-        Long tenantId,
 
         @NotBlank(message = "documentKey 不能为空")
         @Size(max = 128, message = "documentKey 最长 128 个字符")
