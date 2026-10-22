@@ -94,6 +94,21 @@ class DemoUserConfigTest {
         );
     }
 
+    @ParameterizedTest
+    @CsvSource({"agent-reader-a, 401, 1", "agent-reader-b, 402, 2"})
+    void shouldProvideCombinedReadOnlyAgentIdentityWithoutChangingOriginalAccounts(
+            String username, long userId, long tenantId) {
+        AgentUserDetails user = (AgentUserDetails) users.loadUserByUsername(username);
+
+        assertAll(
+                () -> assertEquals(userId, user.getUserId()),
+                () -> assertEquals(tenantId, user.getTenantId()),
+                () -> assertEquals(username, user.getUsername()),
+                () -> assertEquals(Set.of("project:read", "ticket:read", "knowledge:read"), authorities(user)),
+                () -> assertTrue(passwordEncoder.matches(TEST_PASSWORD, user.getPassword()))
+        );
+    }
+
     @Test
     void shouldRejectUnknownUsername() {
         assertThrows(UsernameNotFoundException.class,

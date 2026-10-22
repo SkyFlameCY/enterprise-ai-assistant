@@ -4,6 +4,7 @@ import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
 import cn.coder.sanwei.enterpriseaiassistant.prompt.AgentPromptProvider;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcMessageRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.impl.AgentServiceImpl;
+import cn.coder.sanwei.enterpriseaiassistant.tools.KnowledgeQueryTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.ProjectQueryTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.TicketQueryTools;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,7 +27,6 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
-import org.springframework.core.io.ClassPathResource;
 
 import java.util.Arrays;
 import java.util.List;
@@ -51,17 +51,16 @@ class AgentMessageModelTest {
     @Mock
     private ProjectQueryTools projects;
     @Mock
+    private KnowledgeQueryTools knowledges;
+    @Mock
     private JdbcMessageRepository messages;
     private AgentServiceImpl service;
 
     @BeforeEach
     void setUp() {
         ChatClient client = ChatClient.builder(model).defaultOptions(ToolCallingChatOptions.builder().build()).build();
-        AgentPromptProvider promptProvider = new AgentPromptProvider(
-                new ClassPathResource("prompts/agent/core-system.txt"),
-                new ClassPathResource("prompts/agent/ticket-workflow.txt")
-        );
-        service = new AgentServiceImpl(client, tickets, projects, messages, promptProvider);
+        AgentPromptProvider promptProvider = AgentPromptTestSupport.load();
+        service = new AgentServiceImpl(client, tickets, projects, knowledges, messages, promptProvider);
     }
 
     @Test
@@ -82,7 +81,7 @@ class AgentMessageModelTest {
                 actual.subList(1, actual.size()).stream().map(Message::getText).toList());
         var options = (ToolCallingChatOptions) captured.getValue().getOptions();
         assertSame(OWNER, options.getToolContext().get("executionContext"));
-        verifyNoInteractions(messages, tickets, projects);
+        verifyNoInteractions(messages, tickets, projects, knowledges);
     }
 
     @Test
@@ -91,7 +90,7 @@ class AgentMessageModelTest {
                 () -> service.chatWithMessage(List.of(new UserMessage("问")), null));
         // ChatClient 初始化会读取模型的默认配置；这里只禁止实际生成调用。
         verify(model, never()).call(any(Prompt.class));
-        verifyNoInteractions(messages, tickets, projects);
+        verifyNoInteractions(messages, tickets, projects, knowledges);
     }
 
     @ParameterizedTest
@@ -103,7 +102,7 @@ class AgentMessageModelTest {
                 List.of(new Generation(new AssistantMessage("测试模型正常回答")))));
         assertThrowsExactly(IllegalArgumentException.class, () -> service.chatWithMessage(inputs, OWNER));
         verify(model, never()).call(any(Prompt.class));
-        verifyNoInteractions(messages, tickets, projects);
+        verifyNoInteractions(messages, tickets, projects, knowledges);
     }
 
     static Stream<Arguments> invalidMessages() {

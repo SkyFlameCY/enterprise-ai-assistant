@@ -5,6 +5,7 @@ import cn.coder.sanwei.enterpriseaiassistant.exception.AiServiceException;
 import cn.coder.sanwei.enterpriseaiassistant.prompt.AgentPromptProvider;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcMessageRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.AgentService;
+import cn.coder.sanwei.enterpriseaiassistant.tools.KnowledgeQueryTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.ProjectQueryTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.TicketQueryTools;
 import cn.hutool.core.collection.CollectionUtil;
@@ -34,6 +35,8 @@ public class AgentServiceImpl implements AgentService {
 
     private final ProjectQueryTools projectQueryTools;
 
+    private final KnowledgeQueryTools knowledgeQueryTools;
+
     private final JdbcMessageRepository messageRepository;
 
     private final AgentPromptProvider promptProvider;
@@ -42,12 +45,14 @@ public class AgentServiceImpl implements AgentService {
             @Qualifier("enterpriseChatClient") ChatClient chatClient,
             TicketQueryTools ticketQueryTools,
             ProjectQueryTools projectQueryTools,
+            KnowledgeQueryTools knowledgeQueryTools,
             JdbcMessageRepository messageRepository,
             AgentPromptProvider promptProvider
     ) {
         this.chatClient = chatClient;
         this.ticketQueryTools = ticketQueryTools;
         this.projectQueryTools = projectQueryTools;
+        this.knowledgeQueryTools = knowledgeQueryTools;
         this.messageRepository = messageRepository;
         this.promptProvider = promptProvider;
     }
@@ -94,7 +99,7 @@ public class AgentServiceImpl implements AgentService {
             String answer = chatClient.prompt()
                     .system(promptProvider.systemPrompt())
                     .messages(messages)
-                    .tools(ticketQueryTools, projectQueryTools)
+                    .tools(ticketQueryTools, projectQueryTools, knowledgeQueryTools)
                     .toolContext(Map.of("executionContext", context))
                     .call()
                     .content();

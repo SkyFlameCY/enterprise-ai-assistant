@@ -6,20 +6,23 @@
 
 模型可以查询 PostgreSQL 中的项目、工单列表与详情，并根据列表结果继续查询详情。服务端负责身份、权限和租户过滤，模型不能自行指定查询租户。会话与消息保存在 PostgreSQL 中，支持有限历史下的多轮追问和应用重启后续聊。
 
+Agent 也可以检索当前租户的企业知识，将规范片段与本次项目、工单查询结果结合，例如按模拟缺陷提单规范检查一条工单并给出补充建议。知识片段是依据，不替代实时业务查询或当前权限。
+
 这是开发验证版本，不是完整的生产级 Agent 平台。
 
 ## 当前能力
 
-- 调用 DeepSeek，注册 Spring AI 原生 `queryProject`、`searchTickets`、`getTicketDetail` 只读工具
+- 调用 DeepSeek，注册 Spring AI 原生 `queryProject`、`searchTickets`、`getTicketDetail`、`searchKnowledge` 四个只读工具
 - 查询真实 PostgreSQL 业务表；工单列表按项目、状态筛选，稳定排序，最多返回 10 条
-- 从登录身份构造可信执行上下文；工具分别检查 `project:read` 或 `ticket:read`
+- 从登录身份构造可信执行上下文；各工具独立检查 `project:read`、`ticket:read` 或 `knowledge:read`
 - 返回独立 DTO 白名单字段；工具审计记录工具名、身份、结果数量、耗时和错误类别
 - 本地 `local` profile 使用 HTTP Basic 开发账号，保留 CSRF 校验
 - 会话归属绑定登录租户和用户；不接受客户端指定身份或历史消息
 - 保存完整 USER/ASSISTANT 轮次，加载最近完整历史并按正文长度裁剪，支持重启后续聊
 - 模型调用不占用保存事务；通过版本条件更新和短事务防止并发旧回答覆盖、半轮写入
 - 调用本地 BGE-M3 生成文本向量，计算两段文本的余弦相似度
-- 源码包含文档导入、分块与向量持久化、过滤检索，以及返回来源片段的 RAG 服务
+- 文本知识库导入、分块与向量持久化；按登录租户、有效状态及模型版本过滤检索
+- 知识库接口与服务分别检查 `knowledge:read` 或 `knowledge:write`，问答返回检索来源片段
 - 使用资源文件统一管理 System Prompt 和 User Prompt
 - 默认使用中文回答，并限制模型伪造企业内部数据
 - 使用 PostgreSQL、pgvector 和 Liquibase 管理数据库基础设施
@@ -27,7 +30,7 @@
 - 将参数错误、AI 服务错误和系统错误转换为统一 JSON 响应
 - 离线测试模拟模型、查询或审计依赖；数据库集成测试使用临时 PostgreSQL 容器，均不调用真实模型
 
-> 当前安全策略只开放获取 CSRF Token 和受权限控制的 Agent 对话入口。旧聊天、Embedding 与知识库 HTTP 路由默认拒绝访问；知识库请求中的租户字段尚未接入可信登录身份，不能为了联调直接放开这些路由。Agent 的验证结果不代表全部知识库功能或项目全量测试均已通过。
+> 当前开放 CSRF Token、受权限控制的 Agent 对话，以及知识库文本导入、搜索和问答。知识库身份来自登录用户，不接受客户端指定租户；Agent 的知识工具也独立检查权限。旧聊天、Embedding 和文件导入 HTTP 路由仍默认拒绝访问。现有验证不等于项目全量测试或生产验收。
 
 ## 技术栈
 
@@ -156,6 +159,8 @@ Content-Type: application/json
 
 本地账号：`tenant-a`（用户 101 / 租户 1）、`tenant-b`（用户 102 / 租户 2）拥有两项只读权限；`viewer`（用户 103 / 租户 1）无业务查询权限。密码来自 `DEMO_SECURITY_PASSWORD`。
 
+`agent-reader-a`（用户 401 / 租户 1）和 `agent-reader-b`（用户 402 / 租户 2）同时拥有项目、工单和知识读取权限，适合混合查询；没有写权限。原账号权限保持不变，不能因为能进入 Agent 就默认能调用全部工具。
+
 请求流程：
 
 1. 在 HTTP 客户端调用 `GET /api/security/csrf`，保存会话 Cookie，以及响应中的 `token` 和 `headerName`。
@@ -193,6 +198,18 @@ Content-Type: application/json
 
 历史只提供指代和明确编号线索；项目与工单的权限、存在性和当前状态仍由本次工具查询确认。进入 Agent 接口后，各工具继续独立检查当前身份的权限。
 
+使用联合只读账号进行混合查询：
+
+```json
+{
+  "message": "查询 EA-2026 项目信息，取第一条未处理工单，按照公司的缺陷提单规范检查它的说明，告诉我需要补充什么，并说明依据。"
+}
+```
+
+示例需要本租户实际存在项目、OPEN 工单及对应模拟规范。模型根据任务选择工具，列表查询后只能使用真实返回的工单编号查询详情。searchKnowledge 使用服务端固定的 topK=3、minSimilarity=0.25；阈值只是初始设置，不代表已评测的最优值。
+
+Agent 的来源标识展示在 answer 文本中，可对照文档及片段核验；不会新增结构化 sources 字段，也没有程序化逐句引用校验。独立的知识库 ask 接口仍返回 answer 与 sources。
+
 ### 会话历史与一致性
 
 配置使用与 `spring` 同级的 `agent.memory`：
@@ -214,6 +231,51 @@ agent:
 - 新会话在模型调用前创建，首轮失败允许留下本人空会话；没有自动清理或请求幂等保证。
 
 应用重启后可使用原编号读取数据库历史。需要保留 PostgreSQL 数据及卷；重启恢复不等于长任务恢复。
+
+### 企业知识库
+
+知识库接口使用与 Agent 相同的 HTTP Basic、会话 Cookie 和 CSRF 请求流程。原 `tenant-a`、`tenant-b` 仍只有项目与工单读取权限；知识库使用独立的 `local` 演示账号，密码同样来自 `DEMO_SECURITY_PASSWORD`：
+
+| 账号 | 用户 ID | 租户 ID | 权限 |
+| --- | ---: | ---: | --- |
+| `knowledge-reader-a` | 301 | 1 | `knowledge:read` |
+| `knowledge-reader-b` | 302 | 2 | `knowledge:read` |
+| `knowledge-editor-a` | 303 | 1 | `knowledge:read`、`knowledge:write` |
+| `knowledge-editor-b` | 304 | 2 | `knowledge:read`、`knowledge:write` |
+
+| 方法与路径 | 权限 | 返回 |
+| --- | --- | --- |
+| `POST /api/knowledge/import/text` | `knowledge:write` | 文档 ID |
+| `POST /api/knowledge/search` | `knowledge:read` | 检索片段列表 |
+| `POST /api/knowledge/ask` | `knowledge:read` | `answer` 与 `sources` |
+
+文本导入请求示例：
+
+```json
+{
+  "documentKey": "demo-expense-policy",
+  "version": 1,
+  "title": "示例报销制度",
+  "sourceRef": "demo:expense-v1",
+  "text": "以下为模拟制度：本示例项目的每人报销上限为137元。"
+}
+```
+
+`documentKey`、`version`、`title` 和 `text` 必填；文本最多 20000 字符。相同租户的同编号、同版本文档重复导入返回 409；不同租户可以使用相同编号。导入服务在重复检查和模型调用前验证写权限，并覆盖实体租户为当前身份的租户。
+
+搜索与问答使用相同请求结构：
+
+```json
+{
+  "question": "示例项目的报销上限是多少？",
+  "topK": 5,
+  "minSimilarity": 0.5
+}
+```
+
+`question` 不能为空白且最多 4000 字符；`topK` 为 1–20；`minSimilarity` 为 [-1,1] 的有限值。示例阈值不是经过系统评测的推荐值，相似度也不是答案正确的概率。请求不需要 `tenantId`、`userId` 或 `permissions`；这些额外字段不能改变有效身份。
+
+检索绑定登录租户，仅使用 ACTIVE 文档及当前 Embedding 模型/修订版本的片段。`sources` 包含文档 ID、标题、来源、片段 ID、片段序号、正文和相似度，是本次检索结果；尚未实现逐句引用和完整文档版本引用协议。没有达到阈值的片段时，问答返回固定资料不足提示，不调用聊天模型。当前尚未实现文档版本替换、发布和下架流程。
 
 ### 历史接口说明（当前默认关闭）
 
@@ -310,7 +372,9 @@ curl -X POST http://localhost:8082/api/embeddings/similarity \
 | HTTP 状态码 | 错误码 | 说明 |
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | 请求参数不合法 |
+| 403 | `ACCESS_DENIED` | 知识库服务拒绝当前身份或权限 |
 | 404 | `CONVERSATION_NOT_ACCESSIBLE` | 会话不存在或不属于当前用户及租户 |
+| 409 | `DOCUMENT_ALREADY_EXISTS` | 当前租户已有同编号、同版本文档 |
 | 409 | `CONVERSATION_STATE_ERROR` | 会话归档或达到可续聊的状态/版本上限 |
 | 409 | `CONVERSATION_CONFLICT` | 模型生成期间会话版本已变化 |
 | 502 | `AI_SERVICE_ERROR` | 模型服务调用失败或未返回有效内容 |
@@ -322,19 +386,40 @@ curl -X POST http://localhost:8082/api/embeddings/similarity \
 
 - `src/main/resources/prompts/enterprise-system-prompt.txt`：定义助手角色、回答原则和能力边界
 - `src/main/resources/prompts/chat-user-prompt.txt`：将用户问题组织为 User Message
-- Agent 专用系统提示词目前在 `AgentServiceImpl` 中，明确只读边界、有限历史编号必须重新核验和空列表不继续查询详情的规则。历史使用独立 USER/ASSISTANT 消息，不合并成一个用户正文，不重放未持久化的工具轨迹。
+- Agent 系统规则由 `AgentPromptProvider` 加载 `prompts/agent/core-system.txt`、`ticket-workflow.txt`、`knowledge-workflow.txt` 并组合，明确当前身份、工具分工、混合查询和来源要求；三个资源缺失或空白均启动失败。
+- 历史使用独立 USER/ASSISTANT 消息，不合并成一个用户正文，不重放未持久化的工具轨迹。
 
 System Prompt 会在应用启动时加载；文件缺失或内容为空时，应用会快速失败，避免在约束失效的情况下运行。
 
 ## 测试与构建
 
-运行选定的 16 个离线回归测试类：
+运行选定的 23 个离线回归测试类：
 
 ```bash
-./mvnw -Dtest=ConversationServiceImplTest,ConversationTurnSaveTest,ConversationExceptionHandlerTest,JdbcMessageRepositoryTest,JdbcConversationRepositoryTest,TicketQueryToolsTest,JdbcTicketRepositoryTest,JdbcBusinessRepositoryTest,AgentServiceImplTest,DemoUserConfigTest,AgentSecurityTest,ProjectQueryToolsTest,AgentMemoryPropertiesTest,ConversationHistoryBuilderTest,ConversationAgentServiceImplTest,AgentMessageModelTest test
+./mvnw -Dtest=ConversationServiceImplTest,ConversationTurnSaveTest,ConversationExceptionHandlerTest,JdbcMessageRepositoryTest,JdbcConversationRepositoryTest,TicketQueryToolsTest,JdbcTicketRepositoryTest,JdbcBusinessRepositoryTest,AgentServiceImplTest,DemoUserConfigTest,AgentSecurityTest,ProjectQueryToolsTest,AgentMemoryPropertiesTest,ConversationHistoryBuilderTest,ConversationAgentServiceImplTest,AgentMessageModelTest,PermissionServiceImplTest,KnowledgeImportServiceImplTest,KnowledgeRetrievalServiceImplTest,RagServiceImplTest,KnowledgeSecurityTest,KnowledgeQueryToolsTest,AgentPromptProviderTest test
 ```
 
-上述指定范围由助手在 Java 21 下复跑，392 个用例全部通过，不是项目全量测试的通过声明。离线测试不证明真实模型的工具选择或指代理解。
+2026-10-22，助手在 Java 21 下复跑上述 23 个类，490 个用例全部通过，0 失败、0 错误、0 跳过。覆盖第四工具注册及原生回调、可信身份、权限、审计故障隔离、提示词必需资源和既有会话/安全行为；模型、检索或仓储按层模拟，不调用真实服务。这不是项目全量测试，也不证明真实模型一定选对工具。
+
+同日，开发者反馈固定的 8 个真实任务全部通过，范围包括知识/业务分工、四工具混合任务、缺参澄清、空工单列表、知识权限拒绝、无证据事实及跨租户读取请求。原始响应、实际工具序列和来源未逐项归档；该结论是开发者反馈，不是助手独立运行或系统性准确率、性能与安全保证，也没有改进前后对比数据。
+
+知识库身份、权限与演示账号的选定离线测试：
+
+```bash
+./mvnw -Dtest=PermissionServiceImplTest,KnowledgeImportServiceImplTest,KnowledgeRetrievalServiceImplTest,RagServiceImplTest,KnowledgeSecurityTest,DemoUserConfigTest,AgentSecurityTest test
+```
+
+2026-10-15，助手复跑这 7 个类，87/87 通过。另以实际本地应用、PostgreSQL/pgvector、Ollama/BGE-M3 和 DeepSeek 独立完成 24 项真实联调检查，包括两个租户同编号文档、伪造身份字段、检索与回答来源隔离、Basic/CSRF 拒绝和重复导入；验收合成资料已清理。两次合成制度问答与人为构造的空证据场景不代表系统性检索、拒答或回答质量评测。
+
+真实业务验证由开发者亲自使用 HTTP 客户端操作。启动 `local` 应用、开发数据库和模型后，按前述 Basic、Cookie 和 CSRF 流程执行：
+
+1. 用 `knowledge-editor-a` 导入一份模拟制度，记下返回的文档 ID。
+2. 用 `knowledge-editor-b` 导入相同编号、相同版本但报销额度不同的模拟制度。
+3. 切换 A/B 只读账号，分别搜索和问答，观察片段正文、答案以及来源文档 ID 是否对应本租户。
+4. 用只读账号尝试导入，确认返回 403；用编辑账号重复导入同一版本，确认返回 409。
+5. 在 A 的搜索请求中额外填写 `tenantId: 2`，确认返回仍属于 A。
+
+助手负责准备手工场景、解释业务含义和核对开发者反馈，后续默认不代跑真实验证。手工导入的模拟资料可保留供版本管理练习；再次完整验证时换一个新的文档编号。2026-10-16，开发者反馈手工流程全部通过，未逐项归档原始响应；该反馈与上述助手独立执行的 24 项历史检查分别记录。
 
 数据库集成测试需运行 Docker，显式选择 `IT` 类：
 
@@ -377,14 +462,14 @@ java -jar target/enterprise-ai-assistant-0.0.1-SNAPSHOT.jar --spring.profiles.ac
 - 会话归属、模型前版本快照、保存短事务与并发冲突
 - 会话 HTTP 协议、404/409/500/502 映射与原安全过滤链
 
-上述覆盖清单不代表所有测试均已重新运行。选定的 16 个离线类无需启动模型或数据库；Testcontainers 集成测试需要 Docker 和 PostgreSQL 容器。真实模型行为需单独在本地环境验证。
+上述覆盖清单不代表所有测试均已重新运行。选定的 23 个离线类无需启动模型或数据库；Testcontainers 集成测试需要 Docker 和 PostgreSQL 容器。真实模型行为需单独在本地环境验证。
 
 ## 当前边界
 
 - 会话仅保存 USER 和最终 ASSISTANT 文本；没有摘要、长期记忆、原生工具轨迹持久化或任务执行状态机
 - 有限历史被裁剪后不能保证仍能确定指代对象，信息不足时应询问；会话持久化不等于请求幂等或长任务恢复
-- 知识库服务已有实现，其 HTTP 路由尚未完成可信身份集成，当前保持关闭
-- 不支持创建、修改或删除业务数据，也没有写操作确认、幂等提交或 Agent 级执行步数预算
+- 知识库已接入 Agent 并实现租户隔离及读写权限，尚未实现部门或单文档 ACL、版本发布与下架、程序化逐句引用或 Agent 结构化来源协议
+- 尚不支持创建工单等业务写入，也没有写操作确认、幂等提交或 Agent 级执行步数预算
 - 不支持流式响应
 - 登录采用本地开发账号，不是生产 IAM；工具审计仅写日志，未实现数据库审计和事务一致性
 - 工具异常的业务分类尚未完整贯穿模型调用层，不能承诺所有工具权限拒绝都表现为 HTTP 403

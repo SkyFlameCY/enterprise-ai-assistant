@@ -45,6 +45,26 @@ public class DemoUserConfig {
             case "knowledge-reader-b" -> new AgentUserDetails(302L, 2L, username, passwordHash, List.of(new SimpleGrantedAuthority("knowledge:read")));
             case "knowledge-editor-a" -> new AgentUserDetails(303L, 1L, username, passwordHash, List.of(new SimpleGrantedAuthority("knowledge:read"), new SimpleGrantedAuthority("knowledge:write")));
             case "knowledge-editor-b" -> new AgentUserDetails(304L, 2L, username, passwordHash, List.of(new SimpleGrantedAuthority("knowledge:read"), new SimpleGrantedAuthority("knowledge:write")));
+            case "agent-reader-a" -> new AgentUserDetails(
+                    401L,
+                    1L,
+                    username,
+                    passwordHash,
+                    List.of(
+                            new SimpleGrantedAuthority("project:read"),
+                            new SimpleGrantedAuthority("ticket:read"),
+                            new SimpleGrantedAuthority("knowledge:read")
+                    ));
+            case "agent-reader-b" -> new AgentUserDetails(
+                    402L,
+                    2L,
+                    username,
+                    passwordHash,
+                    List.of(
+                            new SimpleGrantedAuthority("project:read"),
+                            new SimpleGrantedAuthority("ticket:read"),
+                            new SimpleGrantedAuthority("knowledge:read")
+                    ));
             default -> throw new UsernameNotFoundException("用户不存在");
         };
     }

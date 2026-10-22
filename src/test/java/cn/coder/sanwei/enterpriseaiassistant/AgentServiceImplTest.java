@@ -7,10 +7,14 @@ import cn.coder.sanwei.enterpriseaiassistant.dto.ProjectSummary;
 import cn.coder.sanwei.enterpriseaiassistant.dto.TicketDetail;
 import cn.coder.sanwei.enterpriseaiassistant.dto.TicketSummary;
 import cn.coder.sanwei.enterpriseaiassistant.exception.AiServiceException;
+import cn.coder.sanwei.enterpriseaiassistant.model.KnowledgeSearchHit;
 import cn.coder.sanwei.enterpriseaiassistant.prompt.AgentPromptProvider;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcBusinessRepository;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcMessageRepository;
+import cn.coder.sanwei.enterpriseaiassistant.service.KnowledgeRetrievalService;
 import cn.coder.sanwei.enterpriseaiassistant.service.impl.AgentServiceImpl;
+import cn.coder.sanwei.enterpriseaiassistant.service.impl.PermissionServiceImpl;
+import cn.coder.sanwei.enterpriseaiassistant.tools.KnowledgeQueryTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.ProjectQueryTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.TicketQueryTools;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -23,7 +27,9 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -34,7 +40,6 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.security.access.AccessDeniedException;
 
 import java.util.HashSet;
@@ -66,6 +71,15 @@ class AgentServiceImplTest {
     private ToolAuditService auditService;
 
     @Mock
+    private KnowledgeRetrievalService retrievalService;
+
+    @Spy
+    private PermissionServiceImpl permissions = new PermissionServiceImpl();
+
+    @InjectMocks
+    private KnowledgeQueryTools knowledgeTools;
+
+    @Mock
     private JdbcBusinessRepository businessRepository;
 
     @Mock
@@ -78,19 +92,17 @@ class AgentServiceImplTest {
         ChatClient client = ChatClient.builder(model)
                 .defaultOptions(ToolCallingChatOptions.builder().build())
                 .build();
-        AgentPromptProvider promptProvider = new AgentPromptProvider(
-                new ClassPathResource("prompts/agent/core-system.txt"),
-                new ClassPathResource("prompts/agent/ticket-workflow.txt")
-        );
+        AgentPromptProvider promptProvider = AgentPromptTestSupport.load();
         service = new AgentServiceImpl(client,
                 new TicketQueryTools(auditService, businessRepository),
                 new ProjectQueryTools(auditService, businessRepository),
+                knowledgeTools,
                 messageRepository,
                 promptProvider);
     }
 
     @Test
-    void shouldRegisterExactlyThreeReadOnlyToolsAndServerIdentity() throws Exception {
+    void shouldRegisterExactlyFourReadOnlyToolsAndServerIdentity() throws Exception {
         AgentExecutionContext identity = identity(1L, READ_PERMISSIONS);
         ToolCallingChatOptions options = sendAndCaptureOptions(identity);
 
@@ -104,8 +116,8 @@ class AgentServiceImplTest {
                 .description()
                 .contains("未找到可访问的工单"));
 
-        assertEquals(3, options.getToolCallbacks().size());
-        assertEquals(Set.of("searchTickets", "getTicketDetail", "queryProject"),
+        assertEquals(4, options.getToolCallbacks().size());
+        assertEquals(Set.of("searchTickets", "getTicketDetail", "queryProject", "searchKnowledge"),
                 options.getToolCallbacks().stream()
                         .map(callback -> callback.getToolDefinition().name())
                         .collect(Collectors.toSet()));
@@ -115,7 +127,8 @@ class AgentServiceImplTest {
         Map<String, Set<String>> expectedParameters = Map.of(
                 "searchTickets", Set.of("projectCode", "status"),
                 "getTicketDetail", Set.of("ticketNo"),
-                "queryProject", Set.of("projectCode"));
+                "queryProject", Set.of("projectCode"),
+                "searchKnowledge", Set.of("question"));
         for (ToolCallback callback : options.getToolCallbacks()) {
             var schema = OBJECT_MAPPER.readTree(callback.getToolDefinition().inputSchema());
             Set<String> parameters = new HashSet<>();
@@ -124,7 +137,54 @@ class AgentServiceImplTest {
         }
 
         // 模型只返回文字时，没有执行任何工具，也不应产生工具审计。
-        verifyNoInteractions(auditService, businessRepository);
+        verifyNoInteractions(auditService, businessRepository, retrievalService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {1L, 2L})
+    void shouldExposeKnowledgeCallbackWithServerIdentityAndSourceFields(long tenantId) throws Exception {
+        var identity = identity(tenantId, Set.of("project:read", "ticket:read", "knowledge:read"));
+        ToolCallingChatOptions options = sendAndCaptureOptions(identity);
+        var hit = new KnowledgeSearchHit(100L + tenantId, 10L + tenantId,
+                "租户" + tenantId + "缺陷提单规范", "demo:rules-" + tenantId,
+                0, "需要复现步骤、期望结果、实际结果和运行环境。", 0.9);
+        when(retrievalService.retrieval("缺陷提单规范", 3, 0.25, identity)).thenReturn(List.of(hit));
+
+        String output = callback(options, "searchKnowledge").call(
+                "{\"question\":\"缺陷提单规范\"}", new ToolContext(options.getToolContext()));
+
+        var json = OBJECT_MAPPER.readTree(output);
+        assertTrue(json.isArray());
+        assertEquals(1, json.size());
+        var source = json.get(0);
+        assertEquals(hit.documentId(), source.get("documentId").asLong());
+        assertEquals(hit.chunkId(), source.get("chunkId").asLong());
+        assertEquals(hit.title(), source.get("title").asText());
+        assertEquals(hit.sourceRef(), source.get("sourceRef").asText());
+        assertEquals(hit.content(), source.get("content").asText());
+        Set<String> fields = new HashSet<>();
+        source.fieldNames().forEachRemaining(fields::add);
+        assertEquals(Set.of("chunkId", "documentId", "title", "sourceRef",
+                "chunkIndex", "content", "similarity"), fields);
+        verify(retrievalService).retrieval("缺陷提单规范", 3, 0.25, identity);
+        verifyNoMoreInteractions(retrievalService);
+        verifyNoInteractions(businessRepository);
+    }
+
+    @Test
+    void shouldDenyKnowledgeCallbackForExistingBusinessReaderBeforeRetrieval() {
+        var identity = identity(1L, READ_PERMISSIONS);
+        ToolCallingChatOptions options = sendAndCaptureOptions(identity);
+
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> callback(options, "searchKnowledge").call(
+                        "{\"question\":\"缺陷提单规范\"}", new ToolContext(options.getToolContext())));
+        Throwable cause = failure;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        assertInstanceOf(AccessDeniedException.class, cause);
+        verifyNoInteractions(retrievalService, businessRepository);
     }
 
     @ParameterizedTest

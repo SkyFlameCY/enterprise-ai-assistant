@@ -109,6 +109,10 @@ class AgentSecurityTest {
         return Stream.of(
                 Arguments.of("tenant-a", 101L, 1L, Set.of("ticket:read", "project:read")),
                 Arguments.of("tenant-b", 102L, 2L, Set.of("ticket:read", "project:read")),
+                Arguments.of("agent-reader-a", 401L, 1L,
+                        Set.of("ticket:read", "project:read", "knowledge:read")),
+                Arguments.of("agent-reader-b", 402L, 2L,
+                        Set.of("ticket:read", "project:read", "knowledge:read")),
                 Arguments.of("project-reader", 201L, 1L, Set.of("project:read")),
                 Arguments.of("ticket-reader", 202L, 2L, Set.of("ticket:read"))
         );

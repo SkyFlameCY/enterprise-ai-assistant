@@ -22,11 +22,15 @@ public class AgentPromptProvider {
             @Value("classpath:/prompts/agent/core-system.txt")
             Resource coreResource,
             @Value("classpath:/prompts/agent/ticket-workflow.txt")
-            Resource workFlowResource
+            Resource workFlowResource,
+            @Value("classpath:/prompts/agent/knowledge-workflow.txt")
+            Resource knowledgeWorkFlowResource
     ) {
         this.systemPrompt = readRequired(coreResource)
                 + "\n\n"
-                + readRequired(workFlowResource);
+                + readRequired(workFlowResource)
+                + "\n\n"
+                + readRequired(knowledgeWorkFlowResource);
 
     }
 

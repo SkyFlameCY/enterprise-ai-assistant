@@ -6,20 +6,23 @@ An enterprise AI assistant backend built with Spring Boot and Spring AI. DeepSee
 
 The model can query PostgreSQL projects, ticket lists, and ticket details, then use a list result to request details. The server enforces identity, permissions, and tenant filters; the model cannot choose the query tenant. Conversations and messages are stored in PostgreSQL, supporting bounded multi-turn context and continued conversations after application restarts.
 
+The Agent can also retrieve tenant-scoped knowledge and combine policy fragments with fresh project/ticket results, for example to review a ticket against a synthetic defect-reporting policy. Knowledge is evidence, not a replacement for live business queries or current permissions.
+
 This is a development-validation build, not a complete production Agent platform.
 
 ## Current Features
 
-- DeepSeek with native Spring AI `queryProject`, `searchTickets`, and `getTicketDetail` read-only tools
+- DeepSeek with four native Spring AI read-only tools: `queryProject`, `searchTickets`, `getTicketDetail`, and `searchKnowledge`
 - Real PostgreSQL business queries; ticket lists filter by project and status, use stable ordering, and return at most 10 rows
-- Trusted execution identity derived from authentication; per-tool checks for `project:read` or `ticket:read`
+- Trusted execution identity derived from authentication; independent tool checks for `project:read`, `ticket:read`, or `knowledge:read`
 - Allowlisted DTO fields and tool audit events containing identity, counts, duration, outcome, and error category
 - HTTP Basic development accounts in the `local` profile, with CSRF protection retained
 - Conversation ownership bound to the authenticated tenant and user; client-supplied identities and history are not used
 - Complete USER/ASSISTANT turns persisted with a bounded recent-history window and body-length budget
 - Model calls outside database transactions; version-checked short transactions prevent stale concurrent answers and partial writes
 - Local BGE-M3 text embeddings and cosine similarity between two texts
-- Source implementations for document ingestion, chunk/vector persistence, filtered retrieval, and RAG responses with source fragments
+- Text knowledge ingestion, chunk/vector persistence, and retrieval filtered by the authenticated tenant, active state, and embedding revision
+- Endpoint and service checks for `knowledge:read` or `knowledge:write`, with retrieved source fragments returned alongside RAG answers
 - Resource-based System Prompt and User Prompt management
 - Chinese responses by default, with safeguards against fabricating internal company data
 - PostgreSQL, pgvector, and Liquibase database infrastructure
@@ -27,7 +30,7 @@ This is a development-validation build, not a complete production Agent platform
 - Consistent JSON responses for validation, AI service, and unexpected server errors
 - Offline tests mock model, query, or audit dependencies; database integration tests use temporary PostgreSQL containers; neither calls real models
 
-> The current security policy exposes only CSRF token retrieval and the permission-checked Agent endpoint. Legacy chat, embedding, and knowledge HTTP routes are denied by default. Knowledge request tenant fields are not yet integrated with trusted authentication, so those routes must not simply be opened for testing. Agent validation does not establish that all knowledge features or the full project test suite pass.
+> The security policy exposes CSRF token retrieval, permission-checked Agent chat, and knowledge text import, search, and question answering. Knowledge identity comes from authentication; clients cannot choose the tenant, and the Agent knowledge tool independently checks permission. Legacy chat, embedding, and file-import HTTP routes remain denied by default. Existing validation is not a full-suite or production acceptance claim.
 
 ## Technology Stack
 
@@ -156,6 +159,8 @@ Content-Type: application/json
 
 Local accounts: `tenant-a` (user 101 / tenant 1) and `tenant-b` (user 102 / tenant 2) have both read permissions. `viewer` (user 103 / tenant 1) has no business query permission. Their password comes from `DEMO_SECURITY_PASSWORD`.
 
+`agent-reader-a` (user 401 / tenant 1) and `agent-reader-b` (user 402 / tenant 2) have project, ticket, and knowledge read permissions for combined queries, but no write permissions. Original accounts remain unchanged; Agent admission does not grant access to every tool.
+
 Request flow:
 
 1. Call `GET /api/security/csrf` in an HTTP client. Keep the session cookie and the returned `token` and `headerName`.
@@ -193,6 +198,18 @@ Success returns the same conversationId and the actual saved turnNo. Client-supp
 
 History only provides reference and explicit-identifier hints. Current permissions, existence, and project/ticket state must still be checked through fresh tool queries. Each tool independently checks the current identity's permission after endpoint admission.
 
+Example combined query using an account with all three read permissions:
+
+```json
+{
+  "message": "查询 EA-2026 项目信息，取第一条未处理工单，按照公司的缺陷提单规范检查它的说明，告诉我需要补充什么，并说明依据。"
+}
+```
+
+The tenant must have the project, an OPEN ticket, and the corresponding synthetic policy. The model selects tools according to the task; detail calls following a list must use an actual returned ticket number. searchKnowledge uses server-controlled topK=3 and minSimilarity=0.25, an initial setting rather than an evaluated optimum.
+
+Agent source identifiers appear in answer text for manual checking. The Agent response has no new structured sources field or programmatic sentence-level citation validation. The separate knowledge ask endpoint still returns answer and sources.
+
 ### Conversation History and Consistency
 
 Configure `agent.memory` at the same YAML level as `spring`:
@@ -214,6 +231,51 @@ agent:
 - A new conversation is created before the model call. A failed first call may leave an owned empty conversation; automatic cleanup and request idempotency are not provided.
 
 After restarting the application, the same ID loads history from PostgreSQL. Retain database data and volumes; conversation recovery is not long-running task recovery.
+
+### Enterprise Knowledge Base
+
+Knowledge endpoints use the same HTTP Basic, session cookie, and CSRF request flow as the Agent endpoint. The original `tenant-a` and `tenant-b` accounts retain project/ticket read permissions. Knowledge uses dedicated `local` accounts with passwords from `DEMO_SECURITY_PASSWORD`:
+
+| Account | User ID | Tenant ID | Permissions |
+| --- | ---: | ---: | --- |
+| `knowledge-reader-a` | 301 | 1 | `knowledge:read` |
+| `knowledge-reader-b` | 302 | 2 | `knowledge:read` |
+| `knowledge-editor-a` | 303 | 1 | `knowledge:read`, `knowledge:write` |
+| `knowledge-editor-b` | 304 | 2 | `knowledge:read`, `knowledge:write` |
+
+| Method and path | Permission | Result |
+| --- | --- | --- |
+| `POST /api/knowledge/import/text` | `knowledge:write` | Document ID |
+| `POST /api/knowledge/search` | `knowledge:read` | Retrieved fragment list |
+| `POST /api/knowledge/ask` | `knowledge:read` | `answer` and `sources` |
+
+Example text import:
+
+```json
+{
+  "documentKey": "demo-expense-policy",
+  "version": 1,
+  "title": "示例报销制度",
+  "sourceRef": "demo:expense-v1",
+  "text": "以下为模拟制度：本示例项目的每人报销上限为137元。"
+}
+```
+
+`documentKey`, `version`, `title`, and `text` are required; text accepts at most 20,000 characters. Reimporting the same document key and version within a tenant returns 409; different tenants may use the same key. The import service checks write permission before duplicate lookup or embedding, and assigns the authenticated tenant to the entity.
+
+Search and question answering share the same request structure:
+
+```json
+{
+  "question": "示例项目的报销上限是多少？",
+  "topK": 5,
+  "minSimilarity": 0.5
+}
+```
+
+`question` must be nonblank and at most 4,000 characters; `topK` accepts 1–20; `minSimilarity` must be finite and within [-1,1]. The example threshold is not an evaluated recommendation, and similarity is not an answer correctness probability. Requests need no `tenantId`, `userId`, or `permissions`; additional identity fields cannot change the effective identity.
+
+Retrieval uses the authenticated tenant and only ACTIVE documents with the current embedding model/revision. `sources` contains document ID, title, source reference, chunk ID/index, content, and similarity. It represents retrieved fragments; sentence-level citations and a complete document-version citation contract are not implemented. If no fragment passes the threshold, question answering returns the fixed insufficient-evidence message without calling the chat model. Document version replacement, publishing, and withdrawal are not yet implemented.
 
 ### Legacy Endpoint Reference (Denied by Default)
 
@@ -310,7 +372,9 @@ Errors handled by the controller advice use the following structure. Security-fi
 | HTTP Status | Error Code | Description |
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | The request parameters are invalid |
+| 403 | `ACCESS_DENIED` | The knowledge service rejects the identity or permission |
 | 404 | `CONVERSATION_NOT_ACCESSIBLE` | The conversation is missing or not owned by the current user and tenant |
+| 409 | `DOCUMENT_ALREADY_EXISTS` | This tenant already has the same document key and version |
 | 409 | `CONVERSATION_STATE_ERROR` | The conversation is archived or has reached its continuation state/version limit |
 | 409 | `CONVERSATION_CONFLICT` | The conversation version changed while the model generated its answer |
 | 502 | `AI_SERVICE_ERROR` | The model call failed or returned no valid content |
@@ -324,19 +388,40 @@ The table describes controller-layer error mappings, not availability of denied 
 
 - `src/main/resources/prompts/enterprise-system-prompt.txt` defines the assistant's role, response principles, and capability boundaries.
 - `src/main/resources/prompts/chat-user-prompt.txt` formats the user's question as a User Message.
-- The Agent system prompt currently lives in `AgentServiceImpl`, defining read-only behavior, revalidation of identifiers from bounded history, and stopping detail calls when a list is empty. History uses separate USER/ASSISTANT messages, not one combined user body or a replay of unpersisted tool trajectories.
+- `AgentPromptProvider` loads and combines `prompts/agent/core-system.txt`, `ticket-workflow.txt`, and `knowledge-workflow.txt`, defining identity boundaries, tool responsibilities, combined queries, and source requirements. Missing or blank required resources fail startup.
+- History uses separate USER/ASSISTANT messages, not one combined user body or a replay of unpersisted tool trajectories.
 
 The System Prompt is loaded when the application starts. If the file is missing or empty, startup fails immediately so that the service cannot run without its expected behavioral constraints.
 
 ## Testing and Building
 
-Run the selected 16 offline regression classes:
+Run the selected 23 offline regression classes:
 
 ```bash
-./mvnw -Dtest=ConversationServiceImplTest,ConversationTurnSaveTest,ConversationExceptionHandlerTest,JdbcMessageRepositoryTest,JdbcConversationRepositoryTest,TicketQueryToolsTest,JdbcTicketRepositoryTest,JdbcBusinessRepositoryTest,AgentServiceImplTest,DemoUserConfigTest,AgentSecurityTest,ProjectQueryToolsTest,AgentMemoryPropertiesTest,ConversationHistoryBuilderTest,ConversationAgentServiceImplTest,AgentMessageModelTest test
+./mvnw -Dtest=ConversationServiceImplTest,ConversationTurnSaveTest,ConversationExceptionHandlerTest,JdbcMessageRepositoryTest,JdbcConversationRepositoryTest,TicketQueryToolsTest,JdbcTicketRepositoryTest,JdbcBusinessRepositoryTest,AgentServiceImplTest,DemoUserConfigTest,AgentSecurityTest,ProjectQueryToolsTest,AgentMemoryPropertiesTest,ConversationHistoryBuilderTest,ConversationAgentServiceImplTest,AgentMessageModelTest,PermissionServiceImplTest,KnowledgeImportServiceImplTest,KnowledgeRetrievalServiceImplTest,RagServiceImplTest,KnowledgeSecurityTest,KnowledgeQueryToolsTest,AgentPromptProviderTest test
 ```
 
-The assistant reran this selected scope under Java 21: all 392 cases passed. This is not a full-suite pass. Offline tests do not establish real-model tool selection or reference resolution.
+On 2026-10-22, the assistant reran these 23 classes under Java 21: all 490 cases passed, with no failures, errors, or skips. Coverage includes fourth-tool registration/native callbacks, trusted identity, permissions, audit failure isolation, required prompt resources, and existing conversation/security behavior. Dependencies are mocked by layer; no live services are called. This is not a full-suite pass or proof of real-model tool selection.
+
+The developer also reported all eight fixed live tasks passing: knowledge/business routing, a four-tool combined task, clarification, empty ticket lists, knowledge permission denial, unsupported facts, and cross-tenant read requests. Raw responses, tool sequences, and sources were not individually archived. This is developer-reported evidence, not independent assistant execution, systematic accuracy/performance/security validation, or a before-and-after improvement measurement.
+
+Selected offline knowledge identity, permission, and account tests:
+
+```bash
+./mvnw -Dtest=PermissionServiceImplTest,KnowledgeImportServiceImplTest,KnowledgeRetrievalServiceImplTest,RagServiceImplTest,KnowledgeSecurityTest,DemoUserConfigTest,AgentSecurityTest test
+```
+
+On 2026-10-15, the assistant reran these seven classes: 87/87 passed. A separate run against the real local application, PostgreSQL/pgvector, Ollama/BGE-M3, and DeepSeek passed 24 live checks, including shared document keys across tenants, forged identity fields, retrieval/answer source isolation, Basic/CSRF rejection, and duplicate imports. Synthetic fixtures were removed afterward. Two synthetic-policy answers and a deliberately empty-evidence case are not a systematic retrieval, refusal, or answer-quality evaluation.
+
+The developer performs live business verification manually in an HTTP client. Start the `local` application, development database, and models, then use the Basic, cookie, and CSRF flow described above:
+
+1. Import a synthetic policy as `knowledge-editor-a` and record its returned document ID.
+2. Import the same key and version as `knowledge-editor-b`, with a different reimbursement limit.
+3. Search and ask as each tenant's reader. Inspect the fragment content, answer, and source document IDs against that tenant's policy.
+4. Confirm that reader imports return 403 and duplicate imports by an editor return 409.
+5. Add `tenantId: 2` to tenant A's search request and confirm that the result still belongs to A.
+
+The assistant prepares manual scenarios, explains their business meaning, and reviews the developer's results. Future live verification is performed by the developer unless explicitly requested otherwise. Manually imported fixtures may be retained for version-management exercises; use a new document key for another complete run. On 2026-10-16, the developer reported that all manual steps passed, without individually archived raw responses. This feedback is recorded separately from the assistant's 24 historical live checks above.
 
 Database integration tests require Docker and explicit selection of `IT` classes:
 
@@ -379,14 +464,14 @@ The current test suite covers:
 - Conversation ownership, pre-model version snapshots, short save transactions, and concurrency conflicts
 - Conversation HTTP contracts, 404/409/500/502 mappings, and the existing security filter chain
 
-The coverage list above is not a claim that every test was rerun. The selected 16 offline classes need no model or database service; Testcontainers integration tests require Docker and a PostgreSQL container. Validate real model behavior separately.
+The coverage list above is not a claim that every test was rerun. The selected 23 offline classes need no model or database service; Testcontainers integration tests require Docker and a PostgreSQL container. Validate real model behavior separately.
 
 ## Current Limitations
 
 - Conversations persist only USER and final ASSISTANT text; summaries, long-term memory, native tool trajectories, and task execution state machines are not implemented.
 - Trimming history may remove the information needed to resolve a reference, requiring clarification. Conversation persistence is not request idempotency or long-running task recovery.
-- Knowledge service implementations exist; their HTTP routes remain closed pending trusted-identity integration.
-- Business writes, write confirmation, idempotent submission, and Agent-level execution-step budgets are not implemented.
+- Knowledge is integrated into the Agent with tenant isolation and read/write permissions; department/document ACLs, version publishing/withdrawal, programmatic sentence-level citations, and structured Agent sources remain unimplemented.
+- Business operations such as ticket creation, write confirmation, idempotent submission, and Agent-level execution-step budgets are not implemented.
 - Streaming responses are not supported.
 - Authentication uses local development accounts, not production IAM. Tool audits are logs, not transactional database audit records.
 - Tool error categories are not fully preserved through the model layer; not every tool-level permission denial is guaranteed to become HTTP 403.
