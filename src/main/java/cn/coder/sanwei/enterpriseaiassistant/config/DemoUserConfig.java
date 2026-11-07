@@ -65,6 +65,30 @@ public class DemoUserConfig {
                             new SimpleGrantedAuthority("ticket:read"),
                             new SimpleGrantedAuthority("knowledge:read")
                     ));
+            case "operator-a" -> new AgentUserDetails(
+                    501L,
+                    1L,
+                    username,
+                    passwordHash,
+                    List.of(
+                            new SimpleGrantedAuthority("project:read"),
+                            new SimpleGrantedAuthority("ticket:read"),
+                            new SimpleGrantedAuthority("knowledge:read"),
+                            new SimpleGrantedAuthority("ticket:create")
+                    )
+            );
+            case "operator-b" -> new AgentUserDetails(
+                    502L,
+                    2L,
+                    username,
+                    passwordHash,
+                    List.of(
+                            new SimpleGrantedAuthority("project:read"),
+                            new SimpleGrantedAuthority("ticket:read"),
+                            new SimpleGrantedAuthority("knowledge:read"),
+                            new SimpleGrantedAuthority("ticket:create")
+                    )
+            );
             default -> throw new UsernameNotFoundException("用户不存在");
         };
     }

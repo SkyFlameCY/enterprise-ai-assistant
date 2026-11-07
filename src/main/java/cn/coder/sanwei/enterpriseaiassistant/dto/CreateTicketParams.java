@@ -19,7 +19,7 @@ public record CreateTicketParams(
         @NotBlank(message = "description 必须非空白")
         @Size(max = 4000, message = "description 最多 4000 个字符")
         String description,
-        @NotBlank
+        @NotBlank(message = "priority 必须非空白")
         String priority
 ) {
 }

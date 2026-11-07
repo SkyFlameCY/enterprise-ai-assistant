@@ -1,5 +1,7 @@
 package cn.coder.sanwei.enterpriseaiassistant.dto;
 
+import java.util.List;
+
 /**
  * AgentChatResponse
  *
@@ -9,6 +11,7 @@ package cn.coder.sanwei.enterpriseaiassistant.dto;
 public record AgentChatResponse(
         long conversationId,
         long turnNo,
-        String answer
+        String answer,
+        List<PendingActionPreview> pendingActions
 ) {
 }
