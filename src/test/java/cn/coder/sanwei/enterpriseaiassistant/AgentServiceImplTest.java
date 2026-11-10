@@ -3,6 +3,8 @@ package cn.coder.sanwei.enterpriseaiassistant;
 import cn.coder.sanwei.enterpriseaiassistant.audit.ToolAuditEvent;
 import cn.coder.sanwei.enterpriseaiassistant.audit.ToolAuditService;
 import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
+import cn.coder.sanwei.enterpriseaiassistant.dto.CreateTicketParams;
+import cn.coder.sanwei.enterpriseaiassistant.dto.PendingActionPreview;
 import cn.coder.sanwei.enterpriseaiassistant.dto.ProjectSummary;
 import cn.coder.sanwei.enterpriseaiassistant.dto.TicketDetail;
 import cn.coder.sanwei.enterpriseaiassistant.dto.TicketSummary;
@@ -12,10 +14,12 @@ import cn.coder.sanwei.enterpriseaiassistant.prompt.AgentPromptProvider;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcBusinessRepository;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcMessageRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.KnowledgeRetrievalService;
+import cn.coder.sanwei.enterpriseaiassistant.service.PendingActionService;
 import cn.coder.sanwei.enterpriseaiassistant.service.impl.AgentServiceImpl;
 import cn.coder.sanwei.enterpriseaiassistant.service.impl.PermissionServiceImpl;
 import cn.coder.sanwei.enterpriseaiassistant.tools.KnowledgeQueryTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.ProjectQueryTools;
+import cn.coder.sanwei.enterpriseaiassistant.tools.TicketCommandTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.TicketQueryTools;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,6 +37,7 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -42,10 +47,12 @@ import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.security.access.AccessDeniedException;
 
+import java.time.OffsetDateTime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -63,6 +70,8 @@ class AgentServiceImplTest {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final String MESSAGE = "查询 EA-2026 项目";
     private static final Set<String> READ_PERMISSIONS = Set.of("ticket:read", "project:read");
+    private static final CreateTicketParams DRAFT_PARAMS =
+            new CreateTicketParams("EA-2026", "来源缺失", "原始说明", "HIGH");
 
     @Mock
     private ChatModel model;
@@ -72,6 +81,9 @@ class AgentServiceImplTest {
 
     @Mock
     private KnowledgeRetrievalService retrievalService;
+
+    @Mock
+    private PendingActionService pendingActionService;
 
     @Spy
     private PermissionServiceImpl permissions = new PermissionServiceImpl();
@@ -98,7 +110,8 @@ class AgentServiceImplTest {
                 new ProjectQueryTools(auditService, businessRepository),
                 knowledgeTools,
                 messageRepository,
-                promptProvider);
+                promptProvider,
+                new TicketCommandTools(pendingActionService, auditService));
     }
 
     @Test
@@ -138,6 +151,57 @@ class AgentServiceImplTest {
 
         // 模型只返回文字时，没有执行任何工具，也不应产生工具审计。
         verifyNoInteractions(auditService, businessRepository, retrievalService);
+    }
+
+    @Test
+    void shouldExposeDraftCallbackWithFourBusinessArgumentsAndTrustedScope() throws Exception {
+        long conversationId = 77L;
+        UUID requestId = UUID.randomUUID();
+        var operator = identity(2L, Set.of("project:read", "ticket:create"));
+        ToolCallingChatOptions options = sendScopedAndCaptureOptions(operator, conversationId, requestId);
+        assertEquals(Set.of("queryProject", "searchTickets", "getTicketDetail", "searchKnowledge", "prepareCreateTicket"),
+                options.getToolCallbacks().stream().map(tool -> tool.getToolDefinition().name())
+                        .collect(Collectors.toSet()));
+        assertEquals(Map.of("executionContext", operator, "conversationId", conversationId, "requestId", requestId),
+                options.getToolContext());
+
+        ToolCallback draftTool = callback(options, "prepareCreateTicket");
+        var schema = OBJECT_MAPPER.readTree(draftTool.getToolDefinition().inputSchema());
+        Set<String> exposed = new HashSet<>();
+        schema.get("properties").fieldNames().forEachRemaining(exposed::add);
+        assertEquals(Set.of("projectCode", "title", "description", "priority"), exposed);
+
+        var draft = new PendingActionPreview(UUID.randomUUID(), "CREATE_TICKET", "DRAFT", DRAFT_PARAMS,
+                "a".repeat(64), OffsetDateTime.parse("2026-11-09T09:10:00Z"));
+        when(pendingActionService.prepareCreateTicketDraft(conversationId, requestId, DRAFT_PARAMS, operator))
+                .thenReturn(draft);
+
+        String toolResult = draftTool.call(OBJECT_MAPPER.writeValueAsString(DRAFT_PARAMS),
+                new ToolContext(options.getToolContext()));
+        var json = OBJECT_MAPPER.readTree(toolResult);
+        assertEquals(draft.actionId().toString(), json.path("actionId").asText());
+        assertEquals("DRAFT", json.path("status").asText());
+        assertEquals("HIGH", json.path("params").path("priority").asText());
+        assertTrue(json.hasNonNull("expiresAt"));
+        assertAudit("prepareCreateTicket", operator, "SUCCESS", 1, null);
+        verify(pendingActionService).prepareCreateTicketDraft(conversationId, requestId, DRAFT_PARAMS, operator);
+        verifyNoInteractions(businessRepository, retrievalService);
+    }
+
+    @Test
+    void shouldDenyDraftCallbackForReaderBeforeCallingDraftService() throws Exception {
+        var reader = identity(1L, READ_PERMISSIONS);
+        ToolCallingChatOptions options = sendScopedAndCaptureOptions(reader, 77L, UUID.randomUUID());
+        String arguments = OBJECT_MAPPER.writeValueAsString(DRAFT_PARAMS);
+
+        Throwable error = assertThrows(RuntimeException.class, () ->
+                callback(options, "prepareCreateTicket").call(arguments, new ToolContext(options.getToolContext())));
+        while (error.getCause() != null) {
+            error = error.getCause();
+        }
+        assertInstanceOf(AccessDeniedException.class, error);
+        assertAudit("prepareCreateTicket", reader, "DENIED", 0, "FORBIDDEN");
+        verifyNoInteractions(pendingActionService, businessRepository);
     }
 
     @ParameterizedTest
@@ -378,6 +442,17 @@ class AgentServiceImplTest {
         return options.getToolCallbacks().stream()
                 .filter(candidate -> candidate.getToolDefinition().name().equals(toolName))
                 .findFirst().orElseThrow();
+    }
+
+    private ToolCallingChatOptions sendScopedAndCaptureOptions(
+            AgentExecutionContext identity, long conversationId, UUID requestId) {
+        when(model.call(any(Prompt.class))).thenReturn(response("测试回答"));
+        assertEquals("测试回答", service.chatWithMessage(List.of(new UserMessage("准备工单草稿")),
+                identity, conversationId, requestId));
+
+        var prompt = ArgumentCaptor.forClass(Prompt.class);
+        verify(model).call(prompt.capture());
+        return assertInstanceOf(ToolCallingChatOptions.class, prompt.getValue().getOptions());
     }
 
     private AgentExecutionContext identity(long tenantId, Set<String> permissions) {

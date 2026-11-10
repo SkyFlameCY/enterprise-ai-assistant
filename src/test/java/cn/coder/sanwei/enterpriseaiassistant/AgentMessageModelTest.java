@@ -6,6 +6,7 @@ import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcMessageRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.impl.AgentServiceImpl;
 import cn.coder.sanwei.enterpriseaiassistant.tools.KnowledgeQueryTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.ProjectQueryTools;
+import cn.coder.sanwei.enterpriseaiassistant.tools.TicketCommandTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.TicketQueryTools;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -53,6 +54,8 @@ class AgentMessageModelTest {
     @Mock
     private KnowledgeQueryTools knowledges;
     @Mock
+    private TicketCommandTools ticketCommands;
+    @Mock
     private JdbcMessageRepository messages;
     private AgentServiceImpl service;
 
@@ -60,7 +63,7 @@ class AgentMessageModelTest {
     void setUp() {
         ChatClient client = ChatClient.builder(model).defaultOptions(ToolCallingChatOptions.builder().build()).build();
         AgentPromptProvider promptProvider = AgentPromptTestSupport.load();
-        service = new AgentServiceImpl(client, tickets, projects, knowledges, messages, promptProvider);
+        service = new AgentServiceImpl(client, tickets, projects, knowledges, messages, promptProvider, ticketCommands);
     }
 
     @Test

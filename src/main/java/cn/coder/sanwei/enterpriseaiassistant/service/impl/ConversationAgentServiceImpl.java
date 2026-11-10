@@ -8,8 +8,10 @@ import cn.coder.sanwei.enterpriseaiassistant.entity.AgentMessage;
 import cn.coder.sanwei.enterpriseaiassistant.exception.AiServiceException;
 import cn.coder.sanwei.enterpriseaiassistant.exception.ConversationStateException;
 import cn.coder.sanwei.enterpriseaiassistant.memory.ConversationHistoryBuilder;
+import cn.coder.sanwei.enterpriseaiassistant.model.AgentTurnCommitResult;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcMessageRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.AgentService;
+import cn.coder.sanwei.enterpriseaiassistant.service.AgentTurnCommitService;
 import cn.coder.sanwei.enterpriseaiassistant.service.ConversationAgentService;
 import cn.coder.sanwei.enterpriseaiassistant.service.ConversationService;
 import cn.hutool.core.util.StrUtil;
@@ -17,6 +19,7 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * ConversationAgentServiceImpl
@@ -37,16 +40,20 @@ public class ConversationAgentServiceImpl implements ConversationAgentService {
 
     private final AgentMemoryProperties memoryProperties;
 
+    private final AgentTurnCommitService agentTurnCommitService;
+
     public ConversationAgentServiceImpl(ConversationService conversationService,
                                         JdbcMessageRepository messageRepository,
                                         ConversationHistoryBuilder historyBuilder,
                                         AgentService agentService,
-                                        AgentMemoryProperties memoryProperties) {
+                                        AgentMemoryProperties memoryProperties,
+                                        AgentTurnCommitService agentTurnCommitService) {
         this.conversationService = conversationService;
         this.messageRepository = messageRepository;
         this.historyBuilder = historyBuilder;
         this.agentService = agentService;
         this.memoryProperties = memoryProperties;
+        this.agentTurnCommitService = agentTurnCommitService;
     }
 
     @Override
@@ -80,12 +87,13 @@ public class ConversationAgentServiceImpl implements ConversationAgentService {
         List<Message> messages = historyBuilder.build(recentOwnedMessages, message);
 
         // 调用模型回答
-        String answer = agentService.chatWithMessage(messages, context);
+        UUID requestId = UUID.randomUUID();
+        String answer = agentService.chatWithMessage(messages, context, conversationId, requestId);
         if (StrUtil.isBlank(answer) || answer.length() > memoryProperties.getMaxAssistantChars()) {
             throw new AiServiceException("模型回答错误");
         }
 
-        long turnNo = conversationService.saveCompletedTurn(conversationId, expectedVersion, message, answer, context);
-        return new AgentChatResponse(conversationId, turnNo, answer);
+        AgentTurnCommitResult saved = agentTurnCommitService.commitCompletedTurn(conversationId, expectedVersion, requestId, message, answer, context);
+        return new AgentChatResponse(conversationId, saved.turnNo(), answer, saved.pendingActions());
     }
 }

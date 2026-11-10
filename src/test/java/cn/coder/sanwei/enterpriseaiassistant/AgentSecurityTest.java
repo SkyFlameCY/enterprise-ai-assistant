@@ -87,7 +87,7 @@ class AgentSecurityTest {
             String username, long userId, long tenantId, Set<String> permissions) throws Exception {
         // 准备：只模拟回答；身份和权限由真实 Basic 登录流程产生。
         when(agentService.chat(isNull(), eq(MESSAGE), any(AgentExecutionContext.class)))
-                .thenReturn(new AgentChatResponse(77L, 1L, "项目查询结果"));
+                .thenReturn(new AgentChatResponse(77L, 1L, "项目查询结果", List.of()));
 
         // 执行：携带合法 CSRF 和账号密码请求 Agent 接口。
         mockMvc.perform(post("/api/agent/chat").contextPath("/api")
@@ -96,7 +96,8 @@ class AgentSecurityTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.conversationId").value(77))
                 .andExpect(jsonPath("$.turnNo").value(1))
-                .andExpect(jsonPath("$.answer").value("项目查询结果"));
+                .andExpect(jsonPath("$.answer").value("项目查询结果"))
+                .andExpect(jsonPath("$.pendingActions").isEmpty());
 
         // 验证：入口准入成功，并且传入的是服务端登录身份。
         var context = ArgumentCaptor.forClass(AgentExecutionContext.class);
@@ -199,7 +200,7 @@ class AgentSecurityTest {
         assertNotNull(session);
 
         when(agentService.chat(isNull(), eq(MESSAGE), any(AgentExecutionContext.class)))
-                .thenReturn(new AgentChatResponse(77L, 1L, "项目查询结果"));
+                .thenReturn(new AgentChatResponse(77L, 1L, "项目查询结果", List.of()));
         mockMvc.perform(post("/api/agent/chat").contextPath("/api").session(session)
                         .with(httpBasic("tenant-a", TEST_PASSWORD))
                         .header(csrfJson.get("headerName").asText(), csrfJson.get("token").asText())
@@ -214,7 +215,7 @@ class AgentSecurityTest {
     @Test
     void shouldNotAcceptIdentityAndPermissionsForgedInRequestBody() throws Exception {
         when(agentService.chat(isNull(), eq(MESSAGE), any(AgentExecutionContext.class)))
-                .thenReturn(new AgentChatResponse(77L, 1L, "项目查询结果"));
+                .thenReturn(new AgentChatResponse(77L, 1L, "项目查询结果", List.of()));
 
         // 请求体伪造租户和权限；实际身份仍必须取自登录账号。
         mockMvc.perform(post("/api/agent/chat").contextPath("/api")
@@ -251,7 +252,7 @@ class AgentSecurityTest {
     @Test
     void shouldForwardProvidedConversationIdButKeepServerOwnerAndReturnActualTurn() throws Exception {
         when(agentService.chat(eq(77L), eq(MESSAGE), any(AgentExecutionContext.class)))
-                .thenReturn(new AgentChatResponse(77L, 8L, "续聊回答"));
+                .thenReturn(new AgentChatResponse(77L, 8L, "续聊回答", List.of()));
 
         mockMvc.perform(post("/api/agent/chat").contextPath("/api")
                         .with(httpBasic("tenant-a", TEST_PASSWORD)).with(csrf())
@@ -271,7 +272,7 @@ class AgentSecurityTest {
     @Test
     void shouldTreatExplicitNullIdAsNewConversation() throws Exception {
         when(agentService.chat(isNull(), eq(MESSAGE), any(AgentExecutionContext.class)))
-                .thenReturn(new AgentChatResponse(78L, 1L, "首轮回答"));
+                .thenReturn(new AgentChatResponse(78L, 1L, "首轮回答", List.of()));
 
         mockMvc.perform(post("/api/agent/chat").contextPath("/api")
                         .with(httpBasic("tenant-a", TEST_PASSWORD)).with(csrf())

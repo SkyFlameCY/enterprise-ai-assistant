@@ -28,10 +28,11 @@ import static org.junit.jupiter.api.Assertions.*;
 class AgentPromptProviderTest {
 
     private static final List<String> PATHS = List.of("prompts/agent/core-system.txt",
-            "prompts/agent/ticket-workflow.txt", "prompts/agent/knowledge-workflow.txt");
+            "prompts/agent/ticket-workflow.txt", "prompts/agent/knowledge-workflow.txt",
+            "prompts/agent/ticket-command-workflow.txt");
 
     @Test
-    void shouldLoadAllThreeRealResourcesExactlyOnceInOrder() throws IOException {
+    void shouldLoadAllFourRealResourcesExactlyOnceInOrder() throws IOException {
         List<String> contents = new ArrayList<>();
         for (String path : PATHS) {
             var resource = new ClassPathResource(path);

@@ -32,4 +32,11 @@
     <changeSet id="006-add-conversation-version" author="sanwei" dbms="postgresql">
         <sqlFile path="changes/006-add-conversation-version.sql" relativeToChangelogFile="true" splitStatements="true"/>
     </changeSet>
+
+    <changeSet id="007-create-agent-pending-actions" author="sanwei" dbms="postgresql">
+        <sqlFile path="changes/007-create-agent-pending-actions.sql"
+                 relativeToChangelogFile="true"
+                 splitStatements="true"
+                 stripComments="true"/>
+    </changeSet>
 </databaseChangeLog>

@@ -3,6 +3,8 @@ package cn.coder.sanwei.enterpriseaiassistant;
 import cn.coder.sanwei.enterpriseaiassistant.config.AgentMemoryProperties;
 import cn.coder.sanwei.enterpriseaiassistant.context.AgentExecutionContext;
 import cn.coder.sanwei.enterpriseaiassistant.dto.AgentChatResponse;
+import cn.coder.sanwei.enterpriseaiassistant.dto.CreateTicketParams;
+import cn.coder.sanwei.enterpriseaiassistant.dto.PendingActionPreview;
 import cn.coder.sanwei.enterpriseaiassistant.entity.AgentConversation;
 import cn.coder.sanwei.enterpriseaiassistant.entity.AgentMessage;
 import cn.coder.sanwei.enterpriseaiassistant.exception.AiServiceException;
@@ -10,8 +12,10 @@ import cn.coder.sanwei.enterpriseaiassistant.exception.ConversationConflictExcep
 import cn.coder.sanwei.enterpriseaiassistant.exception.ConversationNotAccessibleException;
 import cn.coder.sanwei.enterpriseaiassistant.exception.ConversationStateException;
 import cn.coder.sanwei.enterpriseaiassistant.memory.ConversationHistoryBuilder;
+import cn.coder.sanwei.enterpriseaiassistant.model.AgentTurnCommitResult;
 import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcMessageRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.AgentService;
+import cn.coder.sanwei.enterpriseaiassistant.service.AgentTurnCommitService;
 import cn.coder.sanwei.enterpriseaiassistant.service.ConversationService;
 import cn.coder.sanwei.enterpriseaiassistant.service.impl.ConversationAgentServiceImpl;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,14 +28,17 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.dao.DataAccessResourceFailureException;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -59,6 +66,8 @@ class ConversationAgentServiceImplTest {
     private ConversationHistoryBuilder builder;
     @Mock
     private AgentService modelService;
+    @Mock
+    private AgentTurnCommitService agentTurnCommitService;
 
     private ConversationAgentServiceImpl service;
     private AgentMemoryProperties properties;
@@ -69,7 +78,7 @@ class ConversationAgentServiceImplTest {
         properties.setTurnLimit(5);
         properties.setMaxContextChars(16000);
         properties.setMaxAssistantChars(8000);
-        service = new ConversationAgentServiceImpl(conversations, messages, builder, modelService, properties);
+        service = new ConversationAgentServiceImpl(conversations, messages, builder, modelService, properties, agentTurnCommitService);
     }
 
     @ParameterizedTest
@@ -77,60 +86,80 @@ class ConversationAgentServiceImplTest {
     void shouldCheckOwnerReadHistoryCallModelThenSaveSnapshotVersion(long userId, long tenantId) {
         var context = context(userId, tenantId);
         stubPrepared(context, 7L);
-        when(modelService.chatWithMessage(PROMPT_MESSAGES, context)).thenReturn(ANSWER);
-        when(conversations.saveCompletedTurn(ID, 7L, QUESTION, ANSWER, context)).thenReturn(10L);
+        when(modelService.chatWithMessage(eq(PROMPT_MESSAGES), same(context), eq(ID), any(UUID.class)))
+                .thenReturn(ANSWER);
+        when(agentTurnCommitService.commitCompletedTurn(eq(ID), eq(7L), any(UUID.class),
+                eq(QUESTION), eq(ANSWER), same(context))).thenReturn(new AgentTurnCommitResult(10L, List.of()));
 
-        assertEquals(new AgentChatResponse(ID, 10L, ANSWER), service.chat(ID, QUESTION, context));
+        assertEquals(new AgentChatResponse(ID, 10L, ANSWER, List.of()), service.chat(ID, QUESTION, context));
 
-        var order = inOrder(conversations, messages, builder, modelService);
+        var request = ArgumentCaptor.forClass(UUID.class);
+        var order = inOrder(conversations, messages, builder, modelService, agentTurnCommitService);
         order.verify(conversations).requireActiveOwnedConversation(ID, context);
         order.verify(messages).findRecentOwnedMessages(ID, tenantId, userId, 5);
         order.verify(builder).build(HISTORY, QUESTION);
-        order.verify(modelService).chatWithMessage(PROMPT_MESSAGES, context);
-        order.verify(conversations).saveCompletedTurn(ID, 7L, QUESTION, ANSWER, context);
-        verifyNoMoreInteractions(conversations, messages, builder, modelService);
+        order.verify(modelService).chatWithMessage(eq(PROMPT_MESSAGES), same(context), eq(ID), request.capture());
+        assertNotNull(request.getValue());
+        order.verify(agentTurnCommitService).commitCompletedTurn(ID, 7L, request.getValue(), QUESTION, ANSWER, context);
+        verifyNoMoreInteractions(conversations, messages, builder, modelService, agentTurnCommitService);
     }
 
     @Test
     void shouldCreateOnlyForMissingIdAndSaveActualFirstTurnAfterModelSuccess() {
         when(conversations.createConversation(OWNER)).thenReturn(ID);
         stubPrepared(OWNER, 0L);
-        when(modelService.chatWithMessage(PROMPT_MESSAGES, OWNER)).thenReturn(ANSWER);
-        when(conversations.saveCompletedTurn(ID, 0L, QUESTION, ANSWER, OWNER)).thenReturn(1L);
+        stubAnswer(ANSWER);
+        stubCommit(0L, ANSWER, new AgentTurnCommitResult(1L, List.of()));
 
-        assertEquals(new AgentChatResponse(ID, 1L, ANSWER), service.chat(null, QUESTION, OWNER));
+        assertEquals(new AgentChatResponse(ID, 1L, ANSWER, List.of()), service.chat(null, QUESTION, OWNER));
 
-        var order = inOrder(conversations, messages, builder, modelService);
+        var request = ArgumentCaptor.forClass(UUID.class);
+        var order = inOrder(conversations, messages, builder, modelService, agentTurnCommitService);
         order.verify(conversations).createConversation(OWNER);
         order.verify(conversations).requireActiveOwnedConversation(ID, OWNER);
         order.verify(messages).findRecentOwnedMessages(ID, 1L, 101L, 5);
         order.verify(builder).build(HISTORY, QUESTION);
-        order.verify(modelService).chatWithMessage(PROMPT_MESSAGES, OWNER);
-        order.verify(conversations).saveCompletedTurn(ID, 0L, QUESTION, ANSWER, OWNER);
-        verifyNoMoreInteractions(conversations, messages, builder, modelService);
+        order.verify(modelService).chatWithMessage(eq(PROMPT_MESSAGES), same(OWNER), eq(ID), request.capture());
+        assertNotNull(request.getValue());
+        order.verify(agentTurnCommitService).commitCompletedTurn(ID, 0L, request.getValue(), QUESTION, ANSWER, OWNER);
+        verifyNoMoreInteractions(conversations, messages, builder, modelService, agentTurnCommitService);
+    }
+
+    @Test
+    void shouldReturnOnlyThePreviewsFromTheCommittedTurn() {
+        var preview = new PendingActionPreview(UUID.randomUUID(), "CREATE_TICKET", "PENDING_CONFIRMATION",
+                new CreateTicketParams("EA-2026", "标题", "实际描述", "HIGH"), "a".repeat(64),
+                OffsetDateTime.parse("2026-11-09T09:10:00Z"));
+        stubPrepared(OWNER, 7L);
+        stubAnswer(ANSWER);
+        stubCommit(7L, ANSWER, new AgentTurnCommitResult(10L, List.of(preview)));
+
+        assertEquals(new AgentChatResponse(ID, 10L, ANSWER, List.of(preview)), service.chat(ID, QUESTION, OWNER));
     }
 
     @Test
     void shouldKeepVersionFromBeforeModelRatherThanUseChangedEntityAfterModel() {
         AgentConversation snapshot = stubPrepared(OWNER, 7L);
-        when(modelService.chatWithMessage(PROMPT_MESSAGES, OWNER)).thenAnswer(invocation -> {
+        when(modelService.chatWithMessage(eq(PROMPT_MESSAGES), same(OWNER), eq(ID), any(UUID.class)))
+                .thenAnswer(invocation -> {
             snapshot.setVersion(8L);
             return ANSWER;
         });
-        when(conversations.saveCompletedTurn(ID, 7L, QUESTION, ANSWER, OWNER)).thenReturn(10L);
+        stubCommit(7L, ANSWER, new AgentTurnCommitResult(10L, List.of()));
 
         assertEquals(10L, service.chat(ID, QUESTION, OWNER).turnNo());
 
-        verify(conversations).saveCompletedTurn(ID, 7L, QUESTION, ANSWER, OWNER);
-        verify(conversations, never()).saveCompletedTurn(ID, 8L, QUESTION, ANSWER, OWNER);
+        verify(agentTurnCommitService).commitCompletedTurn(eq(ID), eq(7L), any(UUID.class),
+                eq(QUESTION), eq(ANSWER), same(OWNER));
+        verifyNoMoreInteractions(agentTurnCommitService);
     }
 
     @Test
     void shouldForwardConfiguredHistoryWindow() {
         properties.setTurnLimit(7);
         stubPrepared(OWNER, 0L);
-        when(modelService.chatWithMessage(PROMPT_MESSAGES, OWNER)).thenReturn(ANSWER);
-        when(conversations.saveCompletedTurn(ID, 0L, QUESTION, ANSWER, OWNER)).thenReturn(1L);
+        stubAnswer(ANSWER);
+        stubCommit(0L, ANSWER, new AgentTurnCommitResult(1L, List.of()));
 
         service.chat(ID, QUESTION, OWNER);
 
@@ -142,7 +171,7 @@ class ConversationAgentServiceImplTest {
     @ValueSource(strings = {" ", "\n\t"})
     void shouldRejectBlankInputBeforeCreatingOrCallingAnything(String question) {
         assertThrowsExactly(IllegalArgumentException.class, () -> service.chat(null, question, OWNER));
-        verifyNoInteractions(conversations, messages, builder, modelService);
+        verifyNoInteractions(conversations, messages, builder, modelService, agentTurnCommitService);
     }
 
     @ParameterizedTest
@@ -151,20 +180,20 @@ class ConversationAgentServiceImplTest {
     void shouldRejectOverlongInputBeforeAnyCreationReadOrModel(Long conversationId) {
         assertThrowsExactly(IllegalArgumentException.class,
                 () -> service.chat(conversationId, "问".repeat(4001), OWNER));
-        verifyNoInteractions(conversations, messages, builder, modelService);
+        verifyNoInteractions(conversations, messages, builder, modelService, agentTurnCommitService);
     }
 
     @Test
     void shouldRejectNullIdentityBeforeAnyCreationOrModel() {
         assertThrowsExactly(IllegalArgumentException.class, () -> service.chat(null, QUESTION, null));
-        verifyNoInteractions(conversations, messages, builder, modelService);
+        verifyNoInteractions(conversations, messages, builder, modelService, agentTurnCommitService);
     }
 
     @ParameterizedTest
     @ValueSource(longs = {0L, -1L})
     void shouldRejectProvidedInvalidIdRatherThanCreateNewConversation(long conversationId) {
         assertThrowsExactly(IllegalArgumentException.class, () -> service.chat(conversationId, QUESTION, OWNER));
-        verifyNoInteractions(conversations, messages, builder, modelService);
+        verifyNoInteractions(conversations, messages, builder, modelService, agentTurnCommitService);
     }
 
     @ParameterizedTest
@@ -176,7 +205,7 @@ class ConversationAgentServiceImplTest {
 
         verify(conversations).requireActiveOwnedConversation(ID, OWNER);
         verifyNoMoreInteractions(conversations);
-        verifyNoInteractions(messages, builder, modelService);
+        verifyNoInteractions(messages, builder, modelService, agentTurnCommitService);
     }
 
     static Stream<Arguments> guardFailures() {
@@ -193,7 +222,7 @@ class ConversationAgentServiceImplTest {
 
         assertThrowsExactly(IllegalStateException.class, () -> service.chat(ID, QUESTION, OWNER));
 
-        verifyNoInteractions(messages, builder, modelService);
+        verifyNoInteractions(messages, builder, modelService, agentTurnCommitService);
     }
 
     @Test
@@ -202,7 +231,7 @@ class ConversationAgentServiceImplTest {
 
         assertThrowsExactly(ConversationStateException.class, () -> service.chat(ID, QUESTION, OWNER));
 
-        verifyNoInteractions(messages, builder, modelService);
+        verifyNoInteractions(messages, builder, modelService, agentTurnCommitService);
     }
 
     @Test
@@ -214,7 +243,7 @@ class ConversationAgentServiceImplTest {
         assertSame(failure, assertThrowsExactly(DataAccessResourceFailureException.class,
                 () -> service.chat(ID, QUESTION, OWNER)));
 
-        verifyNoInteractions(builder, modelService);
+        verifyNoInteractions(builder, modelService, agentTurnCommitService);
         verify(conversations).requireActiveOwnedConversation(ID, OWNER);
         verifyNoMoreInteractions(conversations);
     }
@@ -228,7 +257,7 @@ class ConversationAgentServiceImplTest {
 
         assertSame(failure, assertThrowsExactly(IllegalStateException.class, () -> service.chat(ID, QUESTION, OWNER)));
 
-        verifyNoInteractions(modelService);
+        verifyNoInteractions(modelService, agentTurnCommitService);
         verify(conversations).requireActiveOwnedConversation(ID, OWNER);
         verifyNoMoreInteractions(conversations);
     }
@@ -238,13 +267,15 @@ class ConversationAgentServiceImplTest {
         when(conversations.createConversation(OWNER)).thenReturn(ID);
         stubPrepared(OWNER, 0L);
         var failure = new AiServiceException("test model failure");
-        when(modelService.chatWithMessage(PROMPT_MESSAGES, OWNER)).thenThrow(failure);
+        when(modelService.chatWithMessage(eq(PROMPT_MESSAGES), same(OWNER), eq(ID), any(UUID.class)))
+                .thenThrow(failure);
 
         assertSame(failure, assertThrowsExactly(AiServiceException.class, () -> service.chat(null, QUESTION, OWNER)));
 
         verify(conversations).createConversation(OWNER);
         verify(conversations).requireActiveOwnedConversation(ID, OWNER);
         verifyNoMoreInteractions(conversations);
+        verifyNoInteractions(agentTurnCommitService);
     }
 
     @ParameterizedTest
@@ -252,49 +283,55 @@ class ConversationAgentServiceImplTest {
     @ValueSource(strings = {" ", "\n\t"})
     void shouldNeverSaveBlankModelAnswer(String answer) {
         stubPrepared(OWNER, 0L);
-        when(modelService.chatWithMessage(PROMPT_MESSAGES, OWNER)).thenReturn(answer);
+        stubAnswer(answer);
 
         assertThrowsExactly(AiServiceException.class, () -> service.chat(ID, QUESTION, OWNER));
 
         verify(conversations).requireActiveOwnedConversation(ID, OWNER);
         verifyNoMoreInteractions(conversations);
+        verifyNoInteractions(agentTurnCommitService);
     }
 
     @Test
     void shouldNeverSaveOverlongModelAnswer() {
         stubPrepared(OWNER, 0L);
-        when(modelService.chatWithMessage(PROMPT_MESSAGES, OWNER)).thenReturn("答".repeat(8001));
+        stubAnswer("答".repeat(8001));
 
         assertThrowsExactly(AiServiceException.class, () -> service.chat(ID, QUESTION, OWNER));
 
         verify(conversations).requireActiveOwnedConversation(ID, OWNER);
         verifyNoMoreInteractions(conversations);
+        verifyNoInteractions(agentTurnCommitService);
     }
 
     @Test
     void shouldAllowExactAnswerBoundaryAndPreserveBody() {
         String answer = "答".repeat(8000);
         stubPrepared(OWNER, 0L);
-        when(modelService.chatWithMessage(PROMPT_MESSAGES, OWNER)).thenReturn(answer);
-        when(conversations.saveCompletedTurn(ID, 0L, QUESTION, answer, OWNER)).thenReturn(1L);
+        stubAnswer(answer);
+        stubCommit(0L, answer, new AgentTurnCommitResult(1L, List.of()));
 
         assertEquals(answer, service.chat(ID, QUESTION, OWNER).answer());
-        verify(conversations).saveCompletedTurn(ID, 0L, QUESTION, answer, OWNER);
+        verify(agentTurnCommitService).commitCompletedTurn(eq(ID), eq(0L), any(UUID.class),
+                eq(QUESTION), eq(answer), same(OWNER));
     }
 
     @ParameterizedTest
     @MethodSource("saveFailures")
     void shouldPropagateSaveFailureInsteadOfReturningSuccessOrRewritingSnapshot(RuntimeException failure) {
         stubPrepared(OWNER, 7L);
-        when(modelService.chatWithMessage(PROMPT_MESSAGES, OWNER)).thenReturn(ANSWER);
-        when(conversations.saveCompletedTurn(ID, 7L, QUESTION, ANSWER, OWNER)).thenThrow(failure);
+        stubAnswer(ANSWER);
+        when(agentTurnCommitService.commitCompletedTurn(eq(ID), eq(7L), any(UUID.class),
+                eq(QUESTION), eq(ANSWER), same(OWNER))).thenThrow(failure);
 
         assertSame(failure, assertThrows(RuntimeException.class, () -> service.chat(ID, QUESTION, OWNER)));
 
         verify(conversations).requireActiveOwnedConversation(ID, OWNER);
-        verify(conversations).saveCompletedTurn(ID, 7L, QUESTION, ANSWER, OWNER);
         verifyNoMoreInteractions(conversations);
-        verify(modelService).chatWithMessage(PROMPT_MESSAGES, OWNER);
+        var request = ArgumentCaptor.forClass(UUID.class);
+        verify(modelService).chatWithMessage(eq(PROMPT_MESSAGES), same(OWNER), eq(ID), request.capture());
+        verify(agentTurnCommitService).commitCompletedTurn(ID, 7L, request.getValue(), QUESTION, ANSWER, OWNER);
+        verifyNoMoreInteractions(agentTurnCommitService);
         verifyNoMoreInteractions(modelService);
     }
 
@@ -302,6 +339,16 @@ class ConversationAgentServiceImplTest {
         return Stream.of(Arguments.of(new ConversationConflictException("会话已发生变化，请重新发起对话")),
                 Arguments.of(new ConversationStateException("会话当前状态不允许继续对话")),
                 Arguments.of(new DataAccessResourceFailureException("test save database failure")));
+    }
+
+    private void stubAnswer(String answer) {
+        when(modelService.chatWithMessage(eq(PROMPT_MESSAGES), same(OWNER), eq(ID), any(UUID.class)))
+                .thenReturn(answer);
+    }
+
+    private void stubCommit(long version, String answer, AgentTurnCommitResult result) {
+        when(agentTurnCommitService.commitCompletedTurn(eq(ID), eq(version), any(UUID.class),
+                eq(QUESTION), eq(answer), same(OWNER))).thenReturn(result);
     }
 
     private AgentConversation stubPrepared(AgentExecutionContext context, long version) {

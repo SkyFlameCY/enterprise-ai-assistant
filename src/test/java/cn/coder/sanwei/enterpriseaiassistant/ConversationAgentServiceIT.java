@@ -13,6 +13,8 @@ import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcMessageRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.AgentService;
 import cn.coder.sanwei.enterpriseaiassistant.service.ConversationAgentService;
 import cn.coder.sanwei.enterpriseaiassistant.service.ConversationService;
+import cn.coder.sanwei.enterpriseaiassistant.service.PendingActionService;
+import cn.coder.sanwei.enterpriseaiassistant.service.impl.AgentTurnCommitServiceImpl;
 import cn.coder.sanwei.enterpriseaiassistant.service.impl.ConversationAgentServiceImpl;
 import cn.coder.sanwei.enterpriseaiassistant.service.impl.ConversationServiceImpl;
 import org.junit.jupiter.api.AfterEach;
@@ -51,6 +53,7 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -63,7 +66,7 @@ import static org.mockito.Mockito.*;
 
 /**
  * 专用临时 PostgreSQL + 真实会话编排、历史组装、Repository 和 Spring 短事务代理。
- * 只模拟 AgentService 的模型边界，不调用真实模型或工具、不连接开发库。
+ * 模拟模型与草稿激活边界，保留真实轮次提交事务；不调用真实模型或工具、不连接开发库。
  * 无外层测试事务；不等同于 HTTP、真实模型指代理解或应用重启验收。
  */
 @JdbcTest(properties = {
@@ -76,7 +79,7 @@ import static org.mockito.Mockito.*;
 })
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @ActiveProfiles("conversation-agent-service-test")
-@Import({ConversationAgentServiceImpl.class, ConversationServiceImpl.class,
+@Import({ConversationAgentServiceImpl.class, ConversationServiceImpl.class, AgentTurnCommitServiceImpl.class,
         JdbcConversationRepository.class, JdbcMessageRepository.class, ConversationHistoryBuilder.class,
         ConversationAgentServiceIT.MemoryConfiguration.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -119,6 +122,8 @@ class ConversationAgentServiceIT {
     private AgentMemoryProperties properties;
     @MockitoBean
     private AgentService modelService;
+    @MockitoBean
+    private PendingActionService pendingActionService;
 
     private final List<Long> createdConversations = new ArrayList<>();
 
@@ -139,6 +144,12 @@ class ConversationAgentServiceIT {
     @BeforeEach
     void requireRealShortTransactionAndResetBudgets() {
         assertTrue(AopUtils.isAopProxy(conversationService), "保存必须通过 Spring 的事务代理");
+        when(pendingActionService.activeDraftsForTurn(anyLong(), any(UUID.class), anyLong(),
+                any(AgentExecutionContext.class))).thenAnswer(invocation -> {
+            assertTrue(TransactionSynchronizationManager.isActualTransactionActive(),
+                    "草稿激活必须和保存轮次共用事务");
+            return List.of();
+        });
         assertFalse(TransactionSynchronizationManager.isActualTransactionActive(), "不能用外层事务掩盖回滚");
         assertEquals(Boolean.TRUE, jdbcTemplate.execute(
                 (ConnectionCallback<Boolean>) connection -> connection.getAutoCommit()));
@@ -185,19 +196,19 @@ class ConversationAgentServiceIT {
         long id = createFixture();
         Snapshot before = snapshot(id);
         prepareAnswer("EA-2026 项目 ACTIVE");
-        assertEquals(new AgentChatResponse(id, 1L, "EA-2026 项目 ACTIVE"),
+        assertEquals(new AgentChatResponse(id, 1L, "EA-2026 项目 ACTIVE", List.of()),
                 service.chat(id, "查询 EA-2026", OWNER));
         Snapshot first = snapshot(id);
         assertAppended(before, first, 1L, 1L, "查询 EA-2026", "EA-2026 项目 ACTIVE");
         AtomicReference<List<Message>> sent = prepareAnswer("本次查询有 1 条 OPEN 工单");
 
-        assertEquals(new AgentChatResponse(id, 2L, "本次查询有 1 条 OPEN 工单"),
+        assertEquals(new AgentChatResponse(id, 2L, "本次查询有 1 条 OPEN 工单", List.of()),
                 service.chat(id, "它有哪些未处理工单？", OWNER));
 
         assertInputs(sent.get(), List.of(MessageType.USER, MessageType.ASSISTANT, MessageType.USER),
                 List.of("查询 EA-2026", "EA-2026 项目 ACTIVE", "它有哪些未处理工单？"));
         assertAppended(first, snapshot(id), 2L, 2L, "它有哪些未处理工单？", "本次查询有 1 条 OPEN 工单");
-        verify(modelService, times(2)).chatWithMessage(anyList(), any(AgentExecutionContext.class));
+        verify(modelService, times(2)).chatWithMessage(anyList(), any(AgentExecutionContext.class), anyLong(), any(UUID.class));
     }
 
     @ParameterizedTest
@@ -260,12 +271,12 @@ class ConversationAgentServiceIT {
                 case "overlong" -> "答".repeat(properties.getMaxAssistantChars() + 1);
                 default -> throw new AssertionError("未知测试场景");
             };
-        }).when(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class));
+        }).when(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class), anyLong(), any(UUID.class));
 
         assertThrowsExactly(AiServiceException.class, () -> service.chat(id, "新问题", OWNER));
 
         assertEquals(before, snapshot(id));
-        verify(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class));
+        verify(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class), anyLong(), any(UUID.class));
     }
 
     @Test
@@ -274,7 +285,7 @@ class ConversationAgentServiceIT {
         doAnswer(invocation -> {
             assertModelOutsideTransaction(invocation.getArgument(1));
             throw new AiServiceException("模拟首轮模型失败");
-        }).when(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class));
+        }).when(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class), anyLong(), any(UUID.class));
 
         assertThrowsExactly(AiServiceException.class, () -> chatNew("首轮问题"));
 
@@ -299,7 +310,7 @@ class ConversationAgentServiceIT {
         properties.setTurnLimit(2);
         AtomicReference<List<Message>> sent = prepareAnswer("回答5");
 
-        assertEquals(new AgentChatResponse(id, 5L, "回答5"), service.chat(id, "问题5", OWNER));
+        assertEquals(new AgentChatResponse(id, 5L, "回答5", List.of()), service.chat(id, "问题5", OWNER));
 
         assertInputs(sent.get(), List.of(MessageType.USER, MessageType.ASSISTANT,
                         MessageType.USER, MessageType.ASSISTANT, MessageType.USER),
@@ -360,7 +371,7 @@ class ConversationAgentServiceIT {
 
             assertInputs(sent.get(), List.of(MessageType.USER), List.of("新问题"));
             assertEquals(before, snapshot(id), "保存失败不能返回成功，也不能留下新版本、新更新时间或半轮");
-            verify(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class));
+            verify(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class), anyLong(), any(UUID.class));
         } finally {
             jdbcTemplate.execute("ALTER TABLE agent_message DROP CONSTRAINT " + constraint);
         }
@@ -380,7 +391,7 @@ class ConversationAgentServiceIT {
             bothInModel.countDown();
             assertTrue(releaseAnswers.await(5, TimeUnit.SECONDS), "模拟模型等待必须有界");
             return input.getFirst().getText().substring(0, 1) + "回答";
-        }).when(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class));
+        }).when(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class), anyLong(), any(UUID.class));
         var executor = Executors.newFixedThreadPool(2);
         try {
             var first = executor.submit(() -> concurrentChat(id, "A问题"));
@@ -399,7 +410,7 @@ class ConversationAgentServiceIT {
             String winner = success.response().answer().substring(0, 1);
             assertTrue(Set.of("A", "B").contains(winner));
             assertAppended(before, snapshot(id), 1L, 1L, winner + "问题", winner + "回答");
-            verify(modelService, times(2)).chatWithMessage(anyList(), any(AgentExecutionContext.class));
+            verify(modelService, times(2)).chatWithMessage(anyList(), any(AgentExecutionContext.class), anyLong(), any(UUID.class));
         } finally {
             releaseAnswers.countDown();
             executor.shutdownNow();
@@ -414,7 +425,7 @@ class ConversationAgentServiceIT {
             List<Message> input = invocation.getArgument(0);
             captured.set(List.copyOf(input));
             return answer;
-        }).when(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class));
+        }).when(modelService).chatWithMessage(anyList(), any(AgentExecutionContext.class), anyLong(), any(UUID.class));
         return captured;
     }
 

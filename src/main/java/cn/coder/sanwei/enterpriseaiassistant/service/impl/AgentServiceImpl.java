@@ -7,6 +7,7 @@ import cn.coder.sanwei.enterpriseaiassistant.repository.JdbcMessageRepository;
 import cn.coder.sanwei.enterpriseaiassistant.service.AgentService;
 import cn.coder.sanwei.enterpriseaiassistant.tools.KnowledgeQueryTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.ProjectQueryTools;
+import cn.coder.sanwei.enterpriseaiassistant.tools.TicketCommandTools;
 import cn.coder.sanwei.enterpriseaiassistant.tools.TicketQueryTools;
 import cn.hutool.core.collection.CollectionUtil;
 import cn.hutool.core.util.StrUtil;
@@ -19,6 +20,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * AgentServiceImpl
@@ -37,6 +39,8 @@ public class AgentServiceImpl implements AgentService {
 
     private final KnowledgeQueryTools knowledgeQueryTools;
 
+    private final TicketCommandTools ticketCommandTools;
+
     private final JdbcMessageRepository messageRepository;
 
     private final AgentPromptProvider promptProvider;
@@ -47,14 +51,15 @@ public class AgentServiceImpl implements AgentService {
             ProjectQueryTools projectQueryTools,
             KnowledgeQueryTools knowledgeQueryTools,
             JdbcMessageRepository messageRepository,
-            AgentPromptProvider promptProvider
-    ) {
+            AgentPromptProvider promptProvider,
+            TicketCommandTools ticketCommandTools) {
         this.chatClient = chatClient;
         this.ticketQueryTools = ticketQueryTools;
         this.projectQueryTools = projectQueryTools;
         this.knowledgeQueryTools = knowledgeQueryTools;
         this.messageRepository = messageRepository;
         this.promptProvider = promptProvider;
+        this.ticketCommandTools = ticketCommandTools;
     }
 
     @Override
@@ -101,6 +106,56 @@ public class AgentServiceImpl implements AgentService {
                     .messages(messages)
                     .tools(ticketQueryTools, projectQueryTools, knowledgeQueryTools)
                     .toolContext(Map.of("executionContext", context))
+                    .call()
+                    .content();
+
+            if (StrUtil.isBlank(answer)) {
+                throw new AiServiceException("AI 未返回有效内容");
+            }
+
+            return answer;
+        } catch (AiServiceException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new AiServiceException("Agent 模型调用失败", e);
+        }
+    }
+
+    @Override
+    public String chatWithMessage(List<Message> messages, AgentExecutionContext context, long conversationId, UUID requestId) {
+        if (CollectionUtil.isEmpty(messages)) {
+            throw new IllegalArgumentException("messages 不能为空");
+        }
+
+        if (context == null) {
+            throw new IllegalArgumentException("身份上下文不能为空");
+        }
+
+        if (conversationId <= 0 || requestId == null) {
+            throw new IllegalArgumentException("conversationId 必须为正数且 requestId 不能为空");
+        }
+
+        for (Message item : messages) {
+            if (item == null || StrUtil.isBlank(item.getText())) {
+                throw new IllegalArgumentException("消息条目和正文不能为空");
+            }
+
+            MessageType role = item.getMessageType();
+            if (role != MessageType.USER && role != MessageType.ASSISTANT) {
+                throw new IllegalArgumentException("只允许 USER 和 ASSISTANT 消息");
+            }
+        }
+
+        if (messages.getLast().getMessageType() != MessageType.USER) {
+            throw new IllegalArgumentException("最后一条消息必须是当前用户输入");
+        }
+
+        try {
+            String answer = chatClient.prompt()
+                    .system(promptProvider.systemPrompt())
+                    .messages(messages)
+                    .tools(ticketQueryTools, projectQueryTools, knowledgeQueryTools, ticketCommandTools)
+                    .toolContext(Map.of("executionContext", context, "conversationId", conversationId, "requestId", requestId))
                     .call()
                     .content();
 
